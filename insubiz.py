@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 API_VERSION_PATH = "/api/v1.3"
 CRISIS_HELP_FIELD = "postActQ1"
+ABSENCE_UNDER_ONE_DAY_ID = 1
 
 
 class InsuBizError(RuntimeError):
@@ -34,8 +35,8 @@ def reaction_score(infringing_act: dict[str, Any]) -> int | None:
 
 def evaluate_eligibility(incident: dict[str, Any], infringing_act: dict[str, Any]) -> Eligibility:
     """Apply the three business conditions from Automatisering 2."""
-    absence = (incident.get("personalInjury") or {}).get("accidentAbsence")
-    if not isinstance(absence, int) or absence >= 1:
+    absence_duration = (incident.get("personalInjury") or {}).get("accidentDuration") or {}
+    if absence_duration.get("id") != ABSENCE_UNDER_ONE_DAY_ID:
         return Eligibility(False, "fravær er ikke under én dag")
     if infringing_act.get(CRISIS_HELP_FIELD) is True:
         return Eligibility(False, "psykologisk krisehjælp er registreret")
@@ -44,7 +45,7 @@ def evaluate_eligibility(incident: dict[str, Any], infringing_act: dict[str, Any
         return Eligibility(False, "reaktionsskalaen mangler eller har flere svar")
     if score >= 7:
         return Eligibility(False, f"reaktionsskalaen er {score}")
-    return Eligibility(True, f"fravær {absence}, ingen krisehjælp, skala {score}")
+    return Eligibility(True, f"fravær under én dag, ingen krisehjælp, skala {score}")
 
 
 class InsuBizClient:

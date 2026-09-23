@@ -3,7 +3,8 @@
 Robotten gennemgår krænkende handlinger i InsuBiz og afslutter kun en sag, når
 alle tre regler fra procesbeskrivelsen er opfyldt:
 
-1. Fravær (`personalInjury.accidentAbsence`) er under én dag.
+1. Fravær har værdien `Uarbejdsdygtighed mindre end 1 dag`
+   (`personalInjury.accidentDuration.id = 1`).
 2. Psykologisk krisehjælp (`postActQ1`) er ikke valgt.
 3. Den umiddelbare reaktion (`reactionQ1`–`reactionQ10`) har præcis ét svar
    og scoren er under 7.

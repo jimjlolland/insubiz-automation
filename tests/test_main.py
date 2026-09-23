@@ -11,7 +11,10 @@ class FakeClient:
         return {"data": [{"id": 44, "incident": {"id": 12}}]}
 
     async def get_incident(self, incident_id: int) -> dict:
-        return {"personalInjury": {"accidentAbsence": 0}, "status": {"id": 2}}
+        return {
+            "personalInjury": {"accidentDuration": {"id": 1}},
+            "status": {"id": 2},
+        }
 
     async def get_infringing_act(self, incident_id: int, infringing_act_id: int) -> dict:
         return {"postActQ1": False, "reactionQ4": True}
