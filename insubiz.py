@@ -50,14 +50,26 @@ def evaluate_eligibility(incident: dict[str, Any], infringing_act: dict[str, Any
 class InsuBizClient:
     """Small asynchronous wrapper around the endpoints used by this robot."""
 
-    def __init__(self, base_url: str, api_key: str, secret_key: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        secret_key: str,
+        system_owner_id: int | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.secret_key = secret_key
+        self.system_owner_id = system_owner_id
         self.token: str | None = None
 
     async def authenticate(self) -> None:
-        response = await self._request("POST", "/Authentication/SignInAsync", {"apiKey": self.api_key, "secretKey": self.secret_key}, authenticated=False)
+        payload = {"apiKey": self.api_key, "secretKey": self.secret_key}
+        if self.system_owner_id is not None:
+            payload["systemOwnerId"] = self.system_owner_id
+        response = await self._request(
+            "POST", "/Authentication/SignInAsync", payload, authenticated=False
+        )
         if not response.get("isAuthenticated") or not response.get("token"):
             raise InsuBizError(response.get("message") or "InsuBiz-login mislykkedes")
         self.token = response["token"]

@@ -38,13 +38,19 @@ def insubiz_client_from_credential() -> InsuBizConfiguration:
     api_key = credential.username or data.get("api_key") or os.getenv("INSUBIZ_API_KEY")
     secret_key = credential.password or data.get("secret_key") or os.getenv("INSUBIZ_SECRET_KEY")
     closed_status_id = data.get("closed_status_id") or os.getenv("INSUBIZ_CLOSED_STATUS_ID")
+    system_owner_id = data.get("system_owner_id")
     if not base_url or not api_key or not secret_key or not closed_status_id:
         raise InsuBizError(
             "Credentialen skal indeholde base_url, api_key, secret_key og closed_status_id"
         )
     dry_run = str(data.get("dry_run", "true")).lower() in {"1", "true", "yes"}
     return InsuBizConfiguration(
-        client=InsuBizClient(base_url, api_key, secret_key),
+        client=InsuBizClient(
+            base_url,
+            api_key,
+            secret_key,
+            system_owner_id=int(system_owner_id) if system_owner_id else None,
+        ),
         closed_status_id=int(closed_status_id),
         dry_run=dry_run,
     )

@@ -22,6 +22,7 @@ Indtast dette i credentialens **Data**-felt:
 {
   "base_url": "https://deploy.insubiz.dk",
   "closed_status_id": "<status-id for Afsluttet>",
+  "system_owner_id": "<systemOwnerId fra InsuBiz>",
   "dry_run": "true"
 }
 ```
