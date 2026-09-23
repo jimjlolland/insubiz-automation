@@ -20,6 +20,7 @@ from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility
 
 
 PAGE_SIZE = 100
+DEFAULT_ACTIVE_INCIDENT_STATUS_IDS = (1, 2)
 
 
 def configure_logging() -> None:
@@ -44,7 +45,18 @@ def configure_logging() -> None:
 class InsuBizConfiguration:
     client: InsuBizClient
     closed_status_id: int
+    active_incident_status_ids: tuple[int, ...]
     dry_run: bool
+
+
+def parse_status_ids(value: object) -> tuple[int, ...]:
+    """Parse a comma-separated credential setting with a safe default."""
+    if value is None or not str(value).strip():
+        return DEFAULT_ACTIVE_INCIDENT_STATUS_IDS
+    status_ids = tuple(int(part.strip()) for part in str(value).split(",") if part.strip())
+    if not status_ids:
+        raise ValueError("incident_status_ids skal indeholde mindst ét status-id")
+    return status_ids
 
 
 def insubiz_client_from_credential() -> InsuBizConfiguration:
@@ -70,68 +82,82 @@ def insubiz_client_from_credential() -> InsuBizConfiguration:
             system_owner_id=int(system_owner_id) if system_owner_id else None,
         ),
         closed_status_id=int(closed_status_id),
+        active_incident_status_ids=parse_status_ids(
+            data.get("incident_status_ids") or os.getenv("INSUBIZ_INCIDENT_STATUS_IDS")
+        ),
         dry_run=dry_run,
     )
 
 
-async def populate_queue(workqueue: Workqueue, client: InsuBizClient, closed_status_id: int) -> int:
+async def populate_queue(
+    workqueue: Workqueue,
+    client: InsuBizClient,
+    closed_status_id: int,
+    active_incident_status_ids: tuple[int, ...] = DEFAULT_ACTIVE_INCIDENT_STATUS_IDS,
+) -> int:
     """Find eligible cases and add one auditable work item per incident."""
     logger = logging.getLogger(__name__)
     logger.info("Logger ind i InsuBiz og henter krænkelsessager")
     await client.authenticate()
     logger.info("InsuBiz-login lykkedes")
 
-    page_no = 1
     processed_incident_ids: set[int] = set()
     queued_count = 0
     skipped_closed = 0
     skipped_ineligible = 0
     skipped_existing = 0
-    while True:
-        result = await client.get_infringing_acts(page_no, PAGE_SIZE)
-        acts = result.get("data") or []
-        logger.info("Side %s: modtog %s krænkelsessager", page_no, len(acts))
-        for act_summary in acts:
-            incident_id = (act_summary.get("incident") or {}).get("id")
-            act_id = act_summary.get("id")
-            if not isinstance(incident_id, int) or not isinstance(act_id, int):
-                logger.warning("Springer post uden gyldige id'er over: %s", act_summary)
-                continue
-            if incident_id in processed_incident_ids:
-                continue
-            processed_incident_ids.add(incident_id)
-
-            incident = await client.get_incident(incident_id)
-            if (incident.get("status") or {}).get("id") == closed_status_id:
-                skipped_closed += 1
-                logger.info("Sag %s springes over: allerede afsluttet", incident_id)
-                continue
-            act = await client.get_infringing_act(incident_id, act_id)
-            decision = evaluate_eligibility(incident, act)
-            if not decision.eligible:
-                skipped_ineligible += 1
-                logger.info("Sag %s beholdes åben: %s", incident_id, decision.reason)
-                continue
-
-            reference = f"insubiz-incident-{incident_id}"
-            active_items = workqueue.get_item_by_reference(reference, WorkItemStatus.NEW)
-            active_items += workqueue.get_item_by_reference(
-                reference, WorkItemStatus.IN_PROGRESS
+    for incident_status_id in active_incident_status_ids:
+        page_no = 1
+        logger.info("Henter kun sager med status-id %s", incident_status_id)
+        while True:
+            result = await client.get_infringing_acts(page_no, PAGE_SIZE, incident_status_id)
+            acts = result.get("data") or []
+            logger.info(
+                "Status %s, side %s: modtog %s krænkelsessager",
+                incident_status_id,
+                page_no,
+                len(acts),
             )
-            if active_items:
-                skipped_existing += 1
-                logger.info("Sag %s findes allerede i køen", incident_id)
-                continue
-            workqueue.add_item(
-                {"incident_id": incident_id, "infringing_act_id": act_id},
-                reference=reference,
-            )
-            queued_count += 1
-            logger.info("Sag %s er lagt i køen (%s)", incident_id, decision.reason)
+            for act_summary in acts:
+                incident_id = (act_summary.get("incident") or {}).get("id")
+                act_id = act_summary.get("id")
+                if not isinstance(incident_id, int) or not isinstance(act_id, int):
+                    logger.warning("Springer post uden gyldige id'er over: %s", act_summary)
+                    continue
+                if incident_id in processed_incident_ids:
+                    continue
+                processed_incident_ids.add(incident_id)
 
-        if len(acts) < PAGE_SIZE:
-            break
-        page_no += 1
+                incident = await client.get_incident(incident_id)
+                if (incident.get("status") or {}).get("id") == closed_status_id:
+                    skipped_closed += 1
+                    logger.info("Sag %s springes over: allerede afsluttet", incident_id)
+                    continue
+                decision = evaluate_eligibility(incident, act_summary)
+                if not decision.eligible:
+                    skipped_ineligible += 1
+                    logger.info("Sag %s beholdes åben: %s", incident_id, decision.reason)
+                    continue
+
+                reference = f"insubiz-incident-{incident_id}"
+                active_items = workqueue.get_item_by_reference(reference, WorkItemStatus.NEW)
+                active_items += workqueue.get_item_by_reference(
+                    reference, WorkItemStatus.IN_PROGRESS
+                )
+                if active_items:
+                    skipped_existing += 1
+                    logger.info("Sag %s findes allerede i køen", incident_id)
+                    continue
+                workqueue.add_item(
+                    {"incident_id": incident_id, "infringing_act_id": act_id},
+                    reference=reference,
+                )
+                queued_count += 1
+                logger.info("Sag %s er lagt i køen (%s)", incident_id, decision.reason)
+
+            if len(acts) < PAGE_SIZE:
+                break
+            page_no += 1
 
     logger.info(
         "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, %s opfyldte ikke reglerne, %s fandtes allerede i køen",
@@ -196,14 +222,16 @@ if __name__ == "__main__":
         configuration = insubiz_client_from_credential()
         if "--queue" in sys.argv:
             logging.getLogger(__name__).info(
-                "Starter køopbygning (lukket status-id: %s)",
+                "Starter køopbygning (lukket status-id: %s, aktive status-id'er: %s)",
                 configuration.closed_status_id,
+                ", ".join(map(str, configuration.active_incident_status_ids)),
             )
             asyncio.run(
                 populate_queue(
                     workqueue,
                     configuration.client,
                     configuration.closed_status_id,
+                    configuration.active_incident_status_ids,
                 )
             )
         else:

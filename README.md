@@ -22,7 +22,8 @@ Indtast dette i credentialens **Data**-felt:
 ```json
 {
   "base_url": "https://deploy.insubiz.dk",
-  "closed_status_id": "<status-id for Afsluttet>",
+  "closed_status_id": "3",
+  "incident_status_ids": "1,2",
   "system_owner_id": "<systemOwnerId fra InsuBiz>",
   "dry_run": "true"
 }
@@ -32,6 +33,10 @@ Tilknyt en workqueue til processen. Planlæg først processen med `--queue` for
 at finde kvalificerede sager og oprette work items. Kør derefter processen uden
 argumenter for at behandle køen. Hvert work item bliver automatisk markeret
 som completed eller failed af Automation Server.
+
+`incident_status_ids` begrænser opslaget hos InsuBiz. Standardværdien `1,2`
+er **Åben** og **Genoptaget**, så `Xnet indbakke` og `Afsluttet` ikke
+gennemgås.
 
 Start altid med tørkørsel:
 
