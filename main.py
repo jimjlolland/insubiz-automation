@@ -22,6 +22,24 @@ from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility
 PAGE_SIZE = 100
 
 
+def configure_logging() -> None:
+    """Show process events in the run output and keep HTTP client noise out."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+    if not any(getattr(handler, "_insubiz_console", False) for handler in root_logger.handlers):
+        console_handler = logging.StreamHandler()
+        console_handler._insubiz_console = True  # type: ignore[attr-defined]
+        console_handler.setFormatter(
+            logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+        )
+        root_logger.addHandler(console_handler)
+
+    # The Automation Server client writes each log event to its audit API.  Do
+    # not log those HTTP calls too, as that produces a stream of 204 responses.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 @dataclass(frozen=True)
 class InsuBizConfiguration:
     client: InsuBizClient
@@ -59,14 +77,20 @@ def insubiz_client_from_credential() -> InsuBizConfiguration:
 async def populate_queue(workqueue: Workqueue, client: InsuBizClient, closed_status_id: int) -> int:
     """Find eligible cases and add one auditable work item per incident."""
     logger = logging.getLogger(__name__)
+    logger.info("Logger ind i InsuBiz og henter krænkelsessager")
     await client.authenticate()
+    logger.info("InsuBiz-login lykkedes")
 
     page_no = 1
     processed_incident_ids: set[int] = set()
     queued_count = 0
+    skipped_closed = 0
+    skipped_ineligible = 0
+    skipped_existing = 0
     while True:
         result = await client.get_infringing_acts(page_no, PAGE_SIZE)
         acts = result.get("data") or []
+        logger.info("Side %s: modtog %s krænkelsessager", page_no, len(acts))
         for act_summary in acts:
             incident_id = (act_summary.get("incident") or {}).get("id")
             act_id = act_summary.get("id")
@@ -79,10 +103,13 @@ async def populate_queue(workqueue: Workqueue, client: InsuBizClient, closed_sta
 
             incident = await client.get_incident(incident_id)
             if (incident.get("status") or {}).get("id") == closed_status_id:
+                skipped_closed += 1
+                logger.info("Sag %s springes over: allerede afsluttet", incident_id)
                 continue
             act = await client.get_infringing_act(incident_id, act_id)
             decision = evaluate_eligibility(incident, act)
             if not decision.eligible:
+                skipped_ineligible += 1
                 logger.info("Sag %s beholdes åben: %s", incident_id, decision.reason)
                 continue
 
@@ -92,6 +119,7 @@ async def populate_queue(workqueue: Workqueue, client: InsuBizClient, closed_sta
                 reference, WorkItemStatus.IN_PROGRESS
             )
             if active_items:
+                skipped_existing += 1
                 logger.info("Sag %s findes allerede i køen", incident_id)
                 continue
             workqueue.add_item(
@@ -105,7 +133,13 @@ async def populate_queue(workqueue: Workqueue, client: InsuBizClient, closed_sta
             break
         page_no += 1
 
-    logger.info("Indlæsning afsluttet: %s sager lagt i køen", queued_count)
+    logger.info(
+        "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, %s opfyldte ikke reglerne, %s fandtes allerede i køen",
+        queued_count,
+        skipped_closed,
+        skipped_ineligible,
+        skipped_existing,
+    )
     return queued_count
 
 
@@ -117,7 +151,9 @@ async def process_workqueue(
 ) -> int:
     """Recheck and process each queued case in an Automation Server work-item context."""
     logger = logging.getLogger(__name__)
+    logger.info("Logger ind i InsuBiz for at behandle køen")
     await client.authenticate()
+    logger.info("InsuBiz-login lykkedes")
     processed_count = 0
     for item in workqueue:
         try:
@@ -155,10 +191,14 @@ async def process_workqueue(
 if __name__ == "__main__":
     ats = AutomationServer.from_environment()
     workqueue = ats.workqueue()
-    logging.getLogger().setLevel(os.getenv("LOG_LEVEL", "INFO"))
+    configure_logging()
     try:
         configuration = insubiz_client_from_credential()
         if "--queue" in sys.argv:
+            logging.getLogger(__name__).info(
+                "Starter køopbygning (lukket status-id: %s)",
+                configuration.closed_status_id,
+            )
             asyncio.run(
                 populate_queue(
                     workqueue,
@@ -167,6 +207,10 @@ if __name__ == "__main__":
                 )
             )
         else:
+            logging.getLogger(__name__).info(
+                "Starter købehandling (%s)",
+                "tørkørsel" if configuration.dry_run else "opdatering af sager",
+            )
             asyncio.run(
                 process_workqueue(
                     workqueue,
