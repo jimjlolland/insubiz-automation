@@ -1,6 +1,6 @@
 import unittest
 
-from main import parse_status_ids, populate_queue
+from main import format_case_context, parse_status_ids, populate_queue
 
 
 class FakeClient:
@@ -69,3 +69,24 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_status_ids_can_be_configured(self) -> None:
         self.assertEqual(parse_status_ids("1, 2, 7"), (1, 2, 7))
+
+
+class CaseLoggingTests(unittest.TestCase):
+    def test_case_context_contains_decision_fields_without_free_text(self) -> None:
+        context = format_case_context(
+            {
+                "incidentNumberInternal": 1234,
+                "status": {"id": 1, "text": "Åben"},
+                "personalInjury": {
+                    "accidentDuration": {"id": 1, "text": "Under én dag"}
+                },
+                "incidentDescription": "Følsom sagsbeskrivelse",
+            },
+            {"postActQ1": False, "reactionQ4": True},
+        )
+
+        self.assertEqual(
+            context,
+            "skadenr.=1234, status=Åben (1), fravær=Under én dag (1), "
+            "krisehjælp=nej, reaktionsscore=4",
+        )

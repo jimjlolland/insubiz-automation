@@ -16,7 +16,7 @@ from automation_server_client import (
     Workqueue,
 )
 
-from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility
+from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility, reaction_score
 
 
 PAGE_SIZE = 100
@@ -57,6 +57,42 @@ def parse_status_ids(value: object) -> tuple[int, ...]:
     if not status_ids:
         raise ValueError("incident_status_ids skal indeholde mindst ét status-id")
     return status_ids
+
+
+def format_list_item(value: object) -> str:
+    """Render InsuBiz classification values without logging free-text case data."""
+    if not isinstance(value, dict):
+        return "ikke oplyst"
+    text = value.get("text")
+    item_id = value.get("id")
+    if text and item_id is not None:
+        return f"{text} ({item_id})"
+    if text:
+        return str(text)
+    if item_id is not None:
+        return str(item_id)
+    return "ikke oplyst"
+
+
+def format_case_context(incident: dict, infringing_act: dict | None = None) -> str:
+    """Create a concise, non-sensitive summary for an individual case log."""
+    personal_injury = incident.get("personalInjury") or {}
+    parts = [
+        f"skadenr.={incident.get('incidentNumberInternal', 'ikke oplyst')}",
+        f"status={format_list_item(incident.get('status'))}",
+        f"fravær={format_list_item(personal_injury.get('accidentDuration'))}",
+    ]
+    if infringing_act is not None:
+        crisis_help = infringing_act.get("postActQ1")
+        crisis_help_text = "ja" if crisis_help is True else "nej" if crisis_help is False else "ikke oplyst"
+        score = reaction_score(infringing_act)
+        parts.extend(
+            [
+                f"krisehjælp={crisis_help_text}",
+                f"reaktionsscore={score if score is not None else 'mangler/flere svar'}",
+            ]
+        )
+    return ", ".join(parts)
 
 
 def insubiz_client_from_credential() -> InsuBizConfiguration:
@@ -131,12 +167,21 @@ async def populate_queue(
                 incident = await client.get_incident(incident_id)
                 if (incident.get("status") or {}).get("id") == closed_status_id:
                     skipped_closed += 1
-                    logger.info("Sag %s springes over: allerede afsluttet", incident_id)
+                    logger.info(
+                        "Sag %s springes over: allerede afsluttet (%s)",
+                        incident_id,
+                        format_case_context(incident),
+                    )
                     continue
                 decision = evaluate_eligibility(incident, act_summary)
                 if not decision.eligible:
                     skipped_ineligible += 1
-                    logger.info("Sag %s beholdes åben: %s", incident_id, decision.reason)
+                    logger.info(
+                        "Sag %s beholdes åben: %s (%s)",
+                        incident_id,
+                        decision.reason,
+                        format_case_context(incident, act_summary),
+                    )
                     continue
 
                 reference = f"insubiz-incident-{incident_id}"
@@ -146,14 +191,23 @@ async def populate_queue(
                 )
                 if active_items:
                     skipped_existing += 1
-                    logger.info("Sag %s findes allerede i køen", incident_id)
+                    logger.info(
+                        "Sag %s findes allerede i køen (%s)",
+                        incident_id,
+                        format_case_context(incident, act_summary),
+                    )
                     continue
                 workqueue.add_item(
                     {"incident_id": incident_id, "infringing_act_id": act_id},
                     reference=reference,
                 )
                 queued_count += 1
-                logger.info("Sag %s er lagt i køen (%s)", incident_id, decision.reason)
+                logger.info(
+                    "Sag %s er lagt i køen: %s (%s)",
+                    incident_id,
+                    decision.reason,
+                    format_case_context(incident, act_summary),
+                )
 
             if len(acts) < PAGE_SIZE:
                 break
@@ -192,22 +246,37 @@ async def process_workqueue(
                     )
                 incident = await client.get_incident(incident_id)
                 if (incident.get("status") or {}).get("id") == closed_status_id:
-                    logger.info("Sag %s er allerede afsluttet", incident_id)
+                    logger.info(
+                        "Sag %s er allerede afsluttet (%s)",
+                        incident_id,
+                        format_case_context(incident),
+                    )
                     continue
                 act = await client.get_infringing_act(incident_id, act_id)
                 decision = evaluate_eligibility(incident, act)
                 if not decision.eligible:
-                    logger.info("Sag %s beholdes åben: %s", incident_id, decision.reason)
+                    logger.info(
+                        "Sag %s beholdes åben: %s (%s)",
+                        incident_id,
+                        decision.reason,
+                        format_case_context(incident, act),
+                    )
                     continue
                 if dry_run:
                     logger.info(
-                        "TØRKØRSEL: sag %s ville blive afsluttet (%s)",
+                        "TØRKØRSEL: sag %s ville blive afsluttet: %s (%s)",
                         incident_id,
                         decision.reason,
+                        format_case_context(incident, act),
                     )
                 else:
                     await client.close_incident(incident_id, closed_status_id)
-                    logger.info("Sag %s er afsluttet (%s)", incident_id, decision.reason)
+                    logger.info(
+                        "Sag %s er afsluttet: %s (%s)",
+                        incident_id,
+                        decision.reason,
+                        format_case_context(incident, act),
+                    )
                 processed_count += 1
         except Exception:
             logger.exception("Work item %s fejlede", item.id)
