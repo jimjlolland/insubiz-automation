@@ -10,7 +10,7 @@ alle tre regler fra procesbeskrivelsen er opfyldt:
    og scoren er under 7.
 
 Den bruger InsuBiz API 1.3-endepunkterne `SignInAsync`,
-`GetIncidentInfringActsPagedAsync`, `GetIncidentInfringActByIdAsync`,
+`FindInfringingActsPagedAsync`, `GetIncidentInfringActByIdAsync`,
 `GetIncidentByIdAsync` og `UpdateIncidentFieldsAsync` fra `swagger.json`.
 
 ## Automation Server-konfiguration

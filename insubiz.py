@@ -80,7 +80,7 @@ class InsuBizClient:
     ) -> dict[str, Any]:
         return await self._request(
             "POST",
-            "/Incident/GetIncidentInfringActsPagedAsync",
+            "/Incident/FindInfringingActsPagedAsync",
             {"pageNo": page_no, "pageSize": page_size},
             query={"incidentStatusId": incident_status_id},
         )

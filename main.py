@@ -173,14 +173,15 @@ async def populate_queue(
                         format_case_context(incident),
                     )
                     continue
-                decision = evaluate_eligibility(incident, act_summary)
+                act = await client.get_infringing_act(incident_id, act_id)
+                decision = evaluate_eligibility(incident, act)
                 if not decision.eligible:
                     skipped_ineligible += 1
                     logger.info(
                         "Sag %s beholdes åben: %s (%s)",
                         incident_id,
                         decision.reason,
-                        format_case_context(incident, act_summary),
+                        format_case_context(incident, act),
                     )
                     continue
 
@@ -194,7 +195,7 @@ async def populate_queue(
                     logger.info(
                         "Sag %s findes allerede i køen (%s)",
                         incident_id,
-                        format_case_context(incident, act_summary),
+                        format_case_context(incident, act),
                     )
                     continue
                 workqueue.add_item(
@@ -206,7 +207,7 @@ async def populate_queue(
                     "Sag %s er lagt i køen: %s (%s)",
                     incident_id,
                     decision.reason,
-                    format_case_context(incident, act_summary),
+                    format_case_context(incident, act),
                 )
 
             if len(acts) < PAGE_SIZE:

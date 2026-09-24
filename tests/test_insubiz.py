@@ -34,9 +34,15 @@ class RecordingClient(InsuBizClient):
     def __init__(self, system_owner_id: int | None) -> None:
         super().__init__("https://example.test", "api-key", "secret-key", system_owner_id)
         self.payload: dict | None = None
+        self.method: str | None = None
+        self.path: str | None = None
+        self.request_options: dict[str, object] = {}
 
     async def _request(self, method: str, path: str, payload: dict | None = None, **kwargs: object) -> dict:
+        self.method = method
+        self.path = path
         self.payload = payload
+        self.request_options = kwargs
         return {"isAuthenticated": True, "token": "token"}
 
 
@@ -54,3 +60,15 @@ class AuthenticationTests(unittest.IsolatedAsyncioTestCase):
         await client.authenticate()
 
         self.assertNotIn("systemOwnerId", client.payload)
+
+
+class InfringingActSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_filters_by_incident_status(self) -> None:
+        client = RecordingClient(system_owner_id=None)
+
+        await client.get_infringing_acts(page_no=2, page_size=50, incident_status_id=0)
+
+        self.assertEqual(client.method, "POST")
+        self.assertEqual(client.path, "/Incident/FindInfringingActsPagedAsync")
+        self.assertEqual(client.payload, {"pageNo": 2, "pageSize": 50})
+        self.assertEqual(client.request_options["query"], {"incidentStatusId": 0})
