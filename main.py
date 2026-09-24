@@ -20,7 +20,7 @@ from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility, reaction_
 
 
 PAGE_SIZE = 100
-DEFAULT_ACTIVE_INCIDENT_STATUS_IDS = (1, 2)
+DEFAULT_ACTIVE_INCIDENT_STATUS_IDS = (0,)
 
 
 def configure_logging() -> None:

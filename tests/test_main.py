@@ -52,11 +52,11 @@ class PopulateQueueTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient()
 
         queued = await populate_queue(
-            workqueue, client, closed_status_id=9, active_incident_status_ids=(1, 2)
+            workqueue, client, closed_status_id=9, active_incident_status_ids=(0,)
         )
 
         self.assertEqual(queued, 1)
-        self.assertEqual(client.requested_status_ids, [1, 2])
+        self.assertEqual(client.requested_status_ids, [0])
         self.assertEqual(
             workqueue.added_items,
             [({"incident_id": 12, "infringing_act_id": 44}, "insubiz-incident-12")],
@@ -64,8 +64,8 @@ class PopulateQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_status_ids_default_to_open_and_reopened(self) -> None:
-        self.assertEqual(parse_status_ids(None), (1, 2))
+    def test_status_ids_default_to_new_incidents(self) -> None:
+        self.assertEqual(parse_status_ids(None), (0,))
 
     def test_status_ids_can_be_configured(self) -> None:
         self.assertEqual(parse_status_ids("1, 2, 7"), (1, 2, 7))

@@ -23,7 +23,7 @@ Indtast dette i credentialens **Data**-felt:
 {
   "base_url": "https://deploy.insubiz.dk",
   "closed_status_id": "3",
-  "incident_status_ids": "1,2",
+  "incident_status_ids": "0",
   "system_owner_id": "<systemOwnerId fra InsuBiz>",
   "dry_run": "true"
 }
@@ -34,9 +34,9 @@ at finde kvalificerede sager og oprette work items. Kør derefter processen uden
 argumenter for at behandle køen. Hvert work item bliver automatisk markeret
 som completed eller failed af Automation Server.
 
-`incident_status_ids` begrænser opslaget hos InsuBiz. Standardværdien `1,2`
-er **Åben** og **Genoptaget**, så `Xnet indbakke` og `Afsluttet` ikke
-gennemgås.
+`incident_status_ids` begrænser opslaget hos InsuBiz. Standardværdien `0` er
+**Ny** i Insight-visningen (klassifikationen kalder den `Xnet indbakke`), så
+robotten kun gennemgår nye sager.
 
 Start altid med tørkørsel:
 
