@@ -157,58 +157,21 @@ async def populate_queue(
                 break
             page_no += 1
 
-    incident_ids = {
-        incident.get("id") for incident in incident_summaries if isinstance(incident.get("id"), int)
-    }
-    last_editings = [
-        incident.get("lastEditing")
-        for incident in incident_summaries
-        if isinstance(incident.get("lastEditing"), str)
-    ]
-    acts_by_incident: dict[int, dict] = {}
-    if incident_ids and last_editings:
-        cutoff = min(last_editings)
-        logger.info(
-            "Søger krænkelsesposter ændret siden %s for %s nye sager",
-            cutoff,
-            len(incident_ids),
-        )
-        page_no = 1
-        while True:
-            result = await client.get_infringing_acts_since(page_no, PAGE_SIZE, cutoff)
-            acts = result.get("data") or []
-            for act_summary in acts:
-                incident_id = (act_summary.get("incident") or {}).get("id")
-                if isinstance(incident_id, int) and incident_id in incident_ids:
-                    acts_by_incident.setdefault(incident_id, act_summary)
-            if len(acts) < PAGE_SIZE:
-                break
-            page_no += 1
-    elif incident_ids:
-        logger.warning(
-            "Nye sager mangler lastEditing og kan ikke kobles til krænkelsesposter")
-
     queued_count = 0
     skipped_closed = 0
+    skipped_status = 0
+    skipped_missing_act = 0
     skipped_ineligible = 0
     skipped_existing = 0
+    processed_incident_ids: set[int] = set()
     for incident_summary in incident_summaries:
         incident_id = incident_summary.get("id")
         if not isinstance(incident_id, int):
-            logger.warning("Springer ny sag uden gyldigt id over: %s", incident_summary)
+            logger.warning("Springer søgeresultat uden gyldigt sags-id over")
             continue
-        act_summary = acts_by_incident.get(incident_id)
-        if act_summary is None:
-            logger.info(
-                "Sag %s har ingen krænkelsespost i InsuBiz-svaret (%s)",
-                incident_id,
-                format_case_context(incident_summary),
-            )
+        if incident_id in processed_incident_ids:
             continue
-        act_id = act_summary.get("id")
-        if not isinstance(act_id, int):
-            logger.warning("Springer krænkelsespost uden gyldigt id over: %s", act_summary)
-            continue
+        processed_incident_ids.add(incident_id)
 
         incident = await client.get_incident(incident_id)
         if (incident.get("status") or {}).get("id") == closed_status_id:
@@ -219,7 +182,22 @@ async def populate_queue(
                 format_case_context(incident),
             )
             continue
-        act = await client.get_infringing_act(incident_id, act_id)
+        if (incident.get("status") or {}).get("id") != 0:
+            skipped_status += 1
+            logger.info("Sag %s springes over: status er ikke Ny (%s)",
+                        incident_id, format_case_context(incident))
+            continue
+        logger.info("Sag %s: henter krænkelsespost direkte med incidentId (%s)",
+                    incident_id, format_case_context(incident))
+        act = await client.get_infringing_act(incident_id)
+        if act is None:
+            skipped_missing_act += 1
+            logger.warning(
+                "Sag %s: direkte opslag returnerede ingen krænkelsespost; "
+                "sagen er ikke vurderet (%s)", incident_id, format_case_context(incident)
+            )
+            continue
+        act_id = act["id"]
         decision = evaluate_eligibility(incident, act)
         if not decision.eligible:
             skipped_ineligible += 1
@@ -255,11 +233,15 @@ async def populate_queue(
         )
 
     logger.info(
-        "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, %s opfyldte ikke reglerne, %s fandtes allerede i køen",
+        "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, "
+        "%s opfyldte ikke reglerne, %s fandtes allerede i køen, "
+        "%s havde anden status end Ny, %s kunne ikke vurderes uden krænkelsespost",
         queued_count,
         skipped_closed,
         skipped_ineligible,
         skipped_existing,
+        skipped_status,
+        skipped_missing_act,
     )
     return queued_count
 
@@ -293,7 +275,13 @@ async def process_workqueue(
                         format_case_context(incident),
                     )
                     continue
+                if (incident.get("status") or {}).get("id") != 0:
+                    logger.info("Sag %s springes over: status er ikke Ny (%s)",
+                                incident_id, format_case_context(incident))
+                    continue
                 act = await client.get_infringing_act(incident_id, act_id)
+                if act is None:
+                    raise WorkItemError(f"Sag {incident_id}: krænkelsespost kunne ikke hentes")
                 decision = evaluate_eligibility(incident, act)
                 if not decision.eligible:
                     logger.info(

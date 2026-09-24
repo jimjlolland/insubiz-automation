@@ -40,6 +40,8 @@ def evaluate_eligibility(incident: dict[str, Any], infringing_act: dict[str, Any
         return Eligibility(False, "fravær er ikke under én dag")
     if infringing_act.get(CRISIS_HELP_FIELD) is True:
         return Eligibility(False, "psykologisk krisehjælp er registreret")
+    if infringing_act.get(CRISIS_HELP_FIELD) is not False:
+        return Eligibility(False, "oplysning om psykologisk krisehjælp mangler eller er ugyldig")
     score = reaction_score(infringing_act)
     if score is None:
         return Eligibility(False, "reaktionsskalaen mangler eller har flere svar")
@@ -75,16 +77,6 @@ class InsuBizClient:
             raise InsuBizError(response.get("message") or "InsuBiz-login mislykkedes")
         self.token = response["token"]
 
-    async def get_infringing_acts_since(
-        self, page_no: int, page_size: int, last_editing: str
-    ) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            "/Incident/GetIncidentInfringActsPagedAsync",
-            {"pageNo": page_no, "pageSize": page_size},
-            query={"lastEditing": last_editing},
-        )
-
     async def find_incidents_by_status(
         self, page_no: int, page_size: int, incident_status_id: int
     ) -> dict[str, Any]:
@@ -95,8 +87,33 @@ class InsuBizClient:
             query={"statusId": incident_status_id},
         )
 
-    async def get_infringing_act(self, incident_id: int, infringing_act_id: int) -> dict[str, Any]:
-        return await self._request("GET", "/Incident/GetIncidentInfringActByIdAsync", query={"incidentId": incident_id, "id": infringing_act_id})
+    async def get_infringing_act(
+        self, incident_id: int, infringing_act_id: int | None = None
+    ) -> dict[str, Any] | None:
+        query = {"incidentId": incident_id}
+        if infringing_act_id is not None:
+            query["id"] = infringing_act_id
+        response = await self._request(
+            "GET", "/Incident/GetIncidentInfringActByIdAsync", query=query
+        )
+        if response is None or response == {}:
+            return None
+        if not isinstance(response, dict):
+            raise InsuBizError(f"Sag {incident_id}: ugyldigt svar på direkte krænkelsesopslag")
+        linked_incident = response.get("incident")
+        act_id = response.get("id")
+        if (
+            not isinstance(linked_incident, dict)
+            or type(linked_incident.get("id")) is not int
+            or linked_incident["id"] != incident_id
+            or type(act_id) is not int
+            or act_id <= 0
+            or (infringing_act_id is not None and act_id != infringing_act_id)
+        ):
+            raise InsuBizError(
+                f"Sag {incident_id}: krænkelsespostens id eller sagstilknytning kunne ikke bekræftes"
+            )
+        return response
 
     async def get_incident(self, incident_id: int) -> dict[str, Any]:
         return await self._request("GET", "/Incident/GetIncidentByIdAsync", query={"id": incident_id})

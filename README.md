@@ -5,12 +5,13 @@ alle tre regler fra procesbeskrivelsen er opfyldt:
 
 1. Fravær har værdien `Uarbejdsdygtighed mindre end 1 dag`
    (`personalInjury.accidentDuration.id = 1`).
-2. Psykologisk krisehjælp (`postActQ1`) er ikke valgt.
+2. Psykologisk krisehjælp (`postActQ1`) er udtrykkeligt `false`.
+   Manglende eller ugyldige værdier forhindrer afslutning.
 3. Den umiddelbare reaktion (`reactionQ1`–`reactionQ10`) har præcis ét svar
    og scoren er under 7.
 
 Den bruger InsuBiz API 1.3-endepunkterne `SignInAsync`,
-`FindIncidentsPagedAsync`, `GetIncidentInfringActsPagedAsync`,
+`FindIncidentsPagedAsync`,
 `GetIncidentInfringActByIdAsync`,
 `GetIncidentByIdAsync` og `UpdateIncidentFieldsAsync` fra `swagger.json`.
 
@@ -39,6 +40,17 @@ som completed eller failed af Automation Server.
 **Ny** i Insight-visningen (klassifikationen kalder den `Xnet indbakke`), så
 robotten kun gennemgår nye sager.
 
+For hver fundet sag hentes sagsdetaljerne og krænkelsesposten direkte via
+`GetIncidentInfringActByIdAsync?incidentId=<sags-id>`, uden datofilter og uden
+parameteren `id`. Svaret skal indeholde et positivt post-id og henvise til
+den forespurgte sag. Tomme svar logges som ikke vurderet; ugyldige svar giver
+en fejl. Dette opslag med kun `incidentId` skal fortsat bekræftes ved en
+tørkørsel mod InsuBiz; lokale tests bruger simulerede svar.
+
+Kun sager, der stadig har status **Ny** (`0`), kan lægges i køen eller
+afsluttes. Status og regler kontrolleres igen ved købehandling, også for
+tidligere oprettede køelementer. Sagsloggen bruger de fulde sagsdetaljer.
+
 Start altid med tørkørsel:
 
 ```sh
@@ -52,5 +64,5 @@ derefter ændrer robotten sagens status til credentialens `closed_status_id`.
 ## Test
 
 ```sh
-python3 -m unittest discover -s tests -v
+uv run --with pytest python -m pytest
 ```

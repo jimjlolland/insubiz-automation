@@ -10,20 +10,6 @@ class FakeClient:
     async def authenticate(self) -> None:
         pass
 
-    async def get_infringing_acts_since(
-        self, page_no: int, page_size: int, last_editing: str
-    ) -> dict:
-        return {
-            "data": [
-                {
-                    "id": 44,
-                    "incident": {"id": 12},
-                    "postActQ1": False,
-                    "reactionQ4": True,
-                }
-            ]
-        }
-
     async def find_incidents_by_status(
         self, page_no: int, page_size: int, incident_status_id: int
     ) -> dict:
@@ -36,11 +22,11 @@ class FakeClient:
     async def get_incident(self, incident_id: int) -> dict:
         return {
             "personalInjury": {"accidentDuration": {"id": 1}},
-            "status": {"id": 2},
+            "status": {"id": 0},
         }
 
-    async def get_infringing_act(self, incident_id: int, infringing_act_id: int) -> dict:
-        return {"postActQ1": False, "reactionQ4": True}
+    async def get_infringing_act(self, incident_id: int, infringing_act_id: int | None = None) -> dict:
+        return {"id": 44, "incident": {"id": incident_id}, "postActQ1": False, "reactionQ4": True}
 
 
 class FakeWorkqueue:
