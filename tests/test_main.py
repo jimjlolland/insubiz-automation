@@ -10,10 +10,9 @@ class FakeClient:
     async def authenticate(self) -> None:
         pass
 
-    async def get_infringing_acts(
-        self, page_no: int, page_size: int, incident_status_id: int
+    async def get_infringing_acts_since(
+        self, page_no: int, page_size: int, last_editing: str
     ) -> dict:
-        self.requested_status_ids.append(incident_status_id)
         return {
             "data": [
                 {
@@ -28,7 +27,11 @@ class FakeClient:
     async def find_incidents_by_status(
         self, page_no: int, page_size: int, incident_status_id: int
     ) -> dict:
-        return {"totalRows": 1}
+        self.requested_status_ids.append(incident_status_id)
+        return {
+            "totalRows": 1,
+            "data": [{"id": 12, "lastEditing": "2026-09-24T12:00:00"}],
+        }
 
     async def get_incident(self, incident_id: int) -> dict:
         return {

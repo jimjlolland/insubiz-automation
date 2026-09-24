@@ -75,14 +75,14 @@ class InsuBizClient:
             raise InsuBizError(response.get("message") or "InsuBiz-login mislykkedes")
         self.token = response["token"]
 
-    async def get_infringing_acts(
-        self, page_no: int, page_size: int, incident_status_id: int
+    async def get_infringing_acts_since(
+        self, page_no: int, page_size: int, last_editing: str
     ) -> dict[str, Any]:
         return await self._request(
             "POST",
-            "/Incident/FindInfringingActsPagedAsync",
+            "/Incident/GetIncidentInfringActsPagedAsync",
             {"pageNo": page_no, "pageSize": page_size},
-            query={"incidentStatusId": incident_status_id},
+            query={"lastEditing": last_editing},
         )
 
     async def find_incidents_by_status(

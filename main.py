@@ -137,90 +137,122 @@ async def populate_queue(
     await client.authenticate()
     logger.info("InsuBiz-login lykkedes")
 
+    incident_summaries: list[dict] = []
     for incident_status_id in active_incident_status_ids:
-        incident_search = await client.find_incidents_by_status(1, 1, incident_status_id)
-        logger.info(
-            "Kontrol: InsuBiz finder %s sager med status-id %s før krænkelsessøgning",
-            incident_search.get("totalRows", "ukendt antal"),
-            incident_status_id,
-        )
+        page_no = 1
+        while True:
+            incident_search = await client.find_incidents_by_status(
+                page_no, PAGE_SIZE, incident_status_id
+            )
+            incidents = incident_search.get("data") or []
+            logger.info(
+                "InsuBiz finder %s sager med status-id %s; side %s indeholder %s",
+                incident_search.get("totalRows", "ukendt antal"),
+                incident_status_id,
+                page_no,
+                len(incidents),
+            )
+            incident_summaries.extend(incidents)
+            if len(incidents) < PAGE_SIZE:
+                break
+            page_no += 1
 
-    processed_incident_ids: set[int] = set()
+    incident_ids = {
+        incident.get("id") for incident in incident_summaries if isinstance(incident.get("id"), int)
+    }
+    last_editings = [
+        incident.get("lastEditing")
+        for incident in incident_summaries
+        if isinstance(incident.get("lastEditing"), str)
+    ]
+    acts_by_incident: dict[int, dict] = {}
+    if incident_ids and last_editings:
+        cutoff = min(last_editings)
+        logger.info(
+            "Søger krænkelsesposter ændret siden %s for %s nye sager",
+            cutoff,
+            len(incident_ids),
+        )
+        page_no = 1
+        while True:
+            result = await client.get_infringing_acts_since(page_no, PAGE_SIZE, cutoff)
+            acts = result.get("data") or []
+            for act_summary in acts:
+                incident_id = (act_summary.get("incident") or {}).get("id")
+                if isinstance(incident_id, int) and incident_id in incident_ids:
+                    acts_by_incident.setdefault(incident_id, act_summary)
+            if len(acts) < PAGE_SIZE:
+                break
+            page_no += 1
+    elif incident_ids:
+        logger.warning(
+            "Nye sager mangler lastEditing og kan ikke kobles til krænkelsesposter")
+
     queued_count = 0
     skipped_closed = 0
     skipped_ineligible = 0
     skipped_existing = 0
-    for incident_status_id in active_incident_status_ids:
-        page_no = 1
-        logger.info("Henter kun sager med status-id %s", incident_status_id)
-        while True:
-            result = await client.get_infringing_acts(page_no, PAGE_SIZE, incident_status_id)
-            acts = result.get("data") or []
+    for incident_summary in incident_summaries:
+        incident_id = incident_summary.get("id")
+        if not isinstance(incident_id, int):
+            logger.warning("Springer ny sag uden gyldigt id over: %s", incident_summary)
+            continue
+        act_summary = acts_by_incident.get(incident_id)
+        if act_summary is None:
             logger.info(
-                "Status %s, side %s: modtog %s krænkelsessager",
-                incident_status_id,
-                page_no,
-                len(acts),
+                "Sag %s har ingen krænkelsespost i InsuBiz-svaret (%s)",
+                incident_id,
+                format_case_context(incident_summary),
             )
-            for act_summary in acts:
-                incident_id = (act_summary.get("incident") or {}).get("id")
-                act_id = act_summary.get("id")
-                if not isinstance(incident_id, int) or not isinstance(act_id, int):
-                    logger.warning("Springer post uden gyldige id'er over: %s", act_summary)
-                    continue
-                if incident_id in processed_incident_ids:
-                    continue
-                processed_incident_ids.add(incident_id)
+            continue
+        act_id = act_summary.get("id")
+        if not isinstance(act_id, int):
+            logger.warning("Springer krænkelsespost uden gyldigt id over: %s", act_summary)
+            continue
 
-                incident = await client.get_incident(incident_id)
-                if (incident.get("status") or {}).get("id") == closed_status_id:
-                    skipped_closed += 1
-                    logger.info(
-                        "Sag %s springes over: allerede afsluttet (%s)",
-                        incident_id,
-                        format_case_context(incident),
-                    )
-                    continue
-                act = await client.get_infringing_act(incident_id, act_id)
-                decision = evaluate_eligibility(incident, act)
-                if not decision.eligible:
-                    skipped_ineligible += 1
-                    logger.info(
-                        "Sag %s beholdes åben: %s (%s)",
-                        incident_id,
-                        decision.reason,
-                        format_case_context(incident, act),
-                    )
-                    continue
+        incident = await client.get_incident(incident_id)
+        if (incident.get("status") or {}).get("id") == closed_status_id:
+            skipped_closed += 1
+            logger.info(
+                "Sag %s springes over: allerede afsluttet (%s)",
+                incident_id,
+                format_case_context(incident),
+            )
+            continue
+        act = await client.get_infringing_act(incident_id, act_id)
+        decision = evaluate_eligibility(incident, act)
+        if not decision.eligible:
+            skipped_ineligible += 1
+            logger.info(
+                "Sag %s beholdes åben: %s (%s)",
+                incident_id,
+                decision.reason,
+                format_case_context(incident, act),
+            )
+            continue
 
-                reference = f"insubiz-incident-{incident_id}"
-                active_items = workqueue.get_item_by_reference(reference, WorkItemStatus.NEW)
-                active_items += workqueue.get_item_by_reference(
-                    reference, WorkItemStatus.IN_PROGRESS
-                )
-                if active_items:
-                    skipped_existing += 1
-                    logger.info(
-                        "Sag %s findes allerede i køen (%s)",
-                        incident_id,
-                        format_case_context(incident, act),
-                    )
-                    continue
-                workqueue.add_item(
-                    {"incident_id": incident_id, "infringing_act_id": act_id},
-                    reference=reference,
-                )
-                queued_count += 1
-                logger.info(
-                    "Sag %s er lagt i køen: %s (%s)",
-                    incident_id,
-                    decision.reason,
-                    format_case_context(incident, act),
-                )
-
-            if len(acts) < PAGE_SIZE:
-                break
-            page_no += 1
+        reference = f"insubiz-incident-{incident_id}"
+        active_items = workqueue.get_item_by_reference(reference, WorkItemStatus.NEW)
+        active_items += workqueue.get_item_by_reference(reference, WorkItemStatus.IN_PROGRESS)
+        if active_items:
+            skipped_existing += 1
+            logger.info(
+                "Sag %s findes allerede i køen (%s)",
+                incident_id,
+                format_case_context(incident, act),
+            )
+            continue
+        workqueue.add_item(
+            {"incident_id": incident_id, "infringing_act_id": act_id},
+            reference=reference,
+        )
+        queued_count += 1
+        logger.info(
+            "Sag %s er lagt i køen: %s (%s)",
+            incident_id,
+            decision.reason,
+            format_case_context(incident, act),
+        )
 
     logger.info(
         "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, %s opfyldte ikke reglerne, %s fandtes allerede i køen",

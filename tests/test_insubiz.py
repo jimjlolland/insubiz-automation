@@ -63,15 +63,19 @@ class AuthenticationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InfringingActSearchTests(unittest.IsolatedAsyncioTestCase):
-    async def test_search_filters_by_incident_status(self) -> None:
+    async def test_search_filters_by_last_editing(self) -> None:
         client = RecordingClient(system_owner_id=None)
 
-        await client.get_infringing_acts(page_no=2, page_size=50, incident_status_id=0)
+        await client.get_infringing_acts_since(
+            page_no=2, page_size=50, last_editing="2026-09-24T12:00:00"
+        )
 
         self.assertEqual(client.method, "POST")
-        self.assertEqual(client.path, "/Incident/FindInfringingActsPagedAsync")
+        self.assertEqual(client.path, "/Incident/GetIncidentInfringActsPagedAsync")
         self.assertEqual(client.payload, {"pageNo": 2, "pageSize": 50})
-        self.assertEqual(client.request_options["query"], {"incidentStatusId": 0})
+        self.assertEqual(
+            client.request_options["query"], {"lastEditing": "2026-09-24T12:00:00"}
+        )
 
     async def test_incident_search_filters_by_status(self) -> None:
         client = RecordingClient(system_owner_id=None)
