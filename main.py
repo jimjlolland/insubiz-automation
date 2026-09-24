@@ -137,6 +137,14 @@ async def populate_queue(
     await client.authenticate()
     logger.info("InsuBiz-login lykkedes")
 
+    for incident_status_id in active_incident_status_ids:
+        incident_search = await client.find_incidents_by_status(1, 1, incident_status_id)
+        logger.info(
+            "Kontrol: InsuBiz finder %s sager med status-id %s før krænkelsessøgning",
+            incident_search.get("totalRows", "ukendt antal"),
+            incident_status_id,
+        )
+
     processed_incident_ids: set[int] = set()
     queued_count = 0
     skipped_closed = 0

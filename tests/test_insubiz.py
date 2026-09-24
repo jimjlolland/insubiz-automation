@@ -72,3 +72,13 @@ class InfringingActSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.path, "/Incident/FindInfringingActsPagedAsync")
         self.assertEqual(client.payload, {"pageNo": 2, "pageSize": 50})
         self.assertEqual(client.request_options["query"], {"incidentStatusId": 0})
+
+    async def test_incident_search_filters_by_status(self) -> None:
+        client = RecordingClient(system_owner_id=None)
+
+        await client.find_incidents_by_status(page_no=1, page_size=1, incident_status_id=0)
+
+        self.assertEqual(client.method, "POST")
+        self.assertEqual(client.path, "/Incident/FindIncidentsPagedAsync")
+        self.assertEqual(client.payload, {"pageNo": 1, "pageSize": 1})
+        self.assertEqual(client.request_options["query"], {"statusId": 0})

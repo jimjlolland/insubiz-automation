@@ -85,6 +85,16 @@ class InsuBizClient:
             query={"incidentStatusId": incident_status_id},
         )
 
+    async def find_incidents_by_status(
+        self, page_no: int, page_size: int, incident_status_id: int
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/Incident/FindIncidentsPagedAsync",
+            {"pageNo": page_no, "pageSize": page_size},
+            query={"statusId": incident_status_id},
+        )
+
     async def get_infringing_act(self, incident_id: int, infringing_act_id: int) -> dict[str, Any]:
         return await self._request("GET", "/Incident/GetIncidentInfringActByIdAsync", query={"incidentId": incident_id, "id": infringing_act_id})
 

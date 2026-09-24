@@ -25,6 +25,11 @@ class FakeClient:
             ]
         }
 
+    async def find_incidents_by_status(
+        self, page_no: int, page_size: int, incident_status_id: int
+    ) -> dict:
+        return {"totalRows": 1}
+
     async def get_incident(self, incident_id: int) -> dict:
         return {
             "personalInjury": {"accidentDuration": {"id": 1}},
