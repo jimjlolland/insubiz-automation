@@ -125,6 +125,43 @@ def insubiz_client_from_credential() -> InsuBizConfiguration:
     )
 
 
+async def load_new_infringing_acts(client: InsuBizClient) -> dict[int, dict[int, dict]]:
+    """Index all returned new-case posts by incident id and post id."""
+    logger = logging.getLogger(__name__)
+    posts: dict[int, dict[int, dict]] = {}
+    seen: set[tuple[int, int]] = set()
+    page_no = 1
+    logger.info("Henter krænkelsesposter via GetIncidentInfringActsPagedAsync med incidentStatusId=0 uden datofilter")
+    while True:
+        result = await client.get_infringing_acts_by_status(page_no, PAGE_SIZE, 0)
+        if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+            raise InsuBizError("Krænkelseslisten har ugyldig struktur; forventede data som liste")
+        acts = result["data"]
+        total = result.get("totalRows")
+        if total is not None and (type(total) is not int or total < 0):
+            raise InsuBizError("Krænkelseslisten har ugyldigt totalRows")
+        logger.info(
+            "Krænkelsesposter for status Ny: side %s indeholder %s, totalRows=%s",
+            page_no, len(acts), total if total is not None else "ukendt",
+        )
+        previous_count = len(seen)
+        for act in acts:
+            linked_incident = act.get("incident") if isinstance(act, dict) else None
+            incident_id = linked_incident.get("id") if isinstance(linked_incident, dict) else None
+            act_id = act.get("id") if isinstance(act, dict) else None
+            if any(type(value) is not int or value <= 0 for value in (incident_id, act_id)):
+                raise InsuBizError("Krænkelseslisten indeholder en post uden gyldigt sags-id eller post-id")
+            seen.add((incident_id, act_id))
+            posts.setdefault(incident_id, {})[act_id] = act
+        if total is not None and len(seen) >= total:
+            return posts
+        if total is None and len(acts) < PAGE_SIZE:
+            return posts
+        if len(seen) == previous_count:
+            raise InsuBizError("Krænkelseslisten kunne ikke indlæses fuldt: ingen nye poster på næste side")
+        page_no += 1
+
+
 async def populate_queue(
     workqueue: Workqueue,
     client: InsuBizClient,
@@ -139,6 +176,9 @@ async def populate_queue(
 
     incident_summaries: list[dict] = []
     for incident_status_id in active_incident_status_ids:
+        if incident_status_id != 0:
+            logger.warning("Status-id %s ignoreres: kun Ny (0) behandles", incident_status_id)
+            continue
         page_no = 1
         while True:
             incident_search = await client.find_incidents_by_status(
@@ -157,10 +197,12 @@ async def populate_queue(
                 break
             page_no += 1
 
+    acts_by_incident = await load_new_infringing_acts(client) if incident_summaries else {}
     queued_count = 0
     skipped_closed = 0
     skipped_status = 0
     skipped_missing_act = 0
+    skipped_ambiguous_act = 0
     skipped_ineligible = 0
     skipped_existing = 0
     processed_incident_ids: set[int] = set()
@@ -187,17 +229,24 @@ async def populate_queue(
             logger.info("Sag %s springes over: status er ikke Ny (%s)",
                         incident_id, format_case_context(incident))
             continue
-        logger.info("Sag %s: henter krænkelsespost direkte med incidentId (%s)",
-                    incident_id, format_case_context(incident))
-        act = await client.get_infringing_act(incident_id)
-        if act is None:
+        acts = acts_by_incident.get(incident_id, {})
+        if not acts:
             skipped_missing_act += 1
             logger.warning(
-                "Sag %s: direkte opslag returnerede ingen krænkelsespost; "
+                "Sag %s: ingen matchende krænkelsespost i listeopslaget med incidentStatusId=0; "
                 "sagen er ikke vurderet (%s)", incident_id, format_case_context(incident)
             )
             continue
+        if len(acts) != 1:
+            skipped_ambiguous_act += 1
+            logger.warning(
+                "Sag %s: listeopslaget returnerede %s forskellige krænkelsesposter; "
+                "sagen er ikke vurderet (%s)", incident_id, len(acts), format_case_context(incident)
+            )
+            continue
+        act = next(iter(acts.values()))
         act_id = act["id"]
+        logger.info("Sag %s: fundet krænkelsespost %s i listeopslaget", incident_id, act_id)
         decision = evaluate_eligibility(incident, act)
         if not decision.eligible:
             skipped_ineligible += 1
@@ -235,13 +284,15 @@ async def populate_queue(
     logger.info(
         "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, "
         "%s opfyldte ikke reglerne, %s fandtes allerede i køen, "
-        "%s havde anden status end Ny, %s kunne ikke vurderes uden krænkelsespost",
+        "%s havde anden status end Ny, %s kunne ikke vurderes uden krænkelsespost, "
+        "%s havde flere krænkelsesposter",
         queued_count,
         skipped_closed,
         skipped_ineligible,
         skipped_existing,
         skipped_status,
         skipped_missing_act,
+        skipped_ambiguous_act,
     )
     return queued_count
 

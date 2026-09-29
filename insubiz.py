@@ -87,12 +87,22 @@ class InsuBizClient:
             query={"statusId": incident_status_id},
         )
 
+    async def get_infringing_acts_by_status(
+        self, page_no: int, page_size: int, incident_status_id: int
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/Incident/GetIncidentInfringActsPagedAsync",
+            {"pageNo": page_no, "pageSize": page_size},
+            query={"incidentStatusId": incident_status_id},
+        )
+
     async def get_infringing_act(
-        self, incident_id: int, infringing_act_id: int | None = None
+        self, incident_id: int, infringing_act_id: int
     ) -> dict[str, Any] | None:
-        query = {"incidentId": incident_id}
-        if infringing_act_id is not None:
-            query["id"] = infringing_act_id
+        if any(type(value) is not int or value <= 0 for value in (incident_id, infringing_act_id)):
+            raise InsuBizError("Direkte krænkelsesopslag kræver både sags-id og post-id")
+        query = {"incidentId": incident_id, "id": infringing_act_id}
         response = await self._request(
             "GET", "/Incident/GetIncidentInfringActByIdAsync", query=query
         )
@@ -108,7 +118,7 @@ class InsuBizClient:
             or linked_incident["id"] != incident_id
             or type(act_id) is not int
             or act_id <= 0
-            or (infringing_act_id is not None and act_id != infringing_act_id)
+            or act_id != infringing_act_id
         ):
             raise InsuBizError(
                 f"Sag {incident_id}: krænkelsespostens id eller sagstilknytning kunne ikke bekræftes"

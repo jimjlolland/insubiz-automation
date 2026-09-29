@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
@@ -33,30 +33,49 @@ def client_for_workflow(status=0, response=None):
         return_value={"data": [{"id": 12}], "totalRows": 1}
     )
     client.get_incident = AsyncMock(return_value=case(status))
+    client.get_infringing_acts_by_status = AsyncMock(
+        return_value={"data": [response] if response else [], "totalRows": 1 if response else 0}
+    )
     client.get_infringing_act = AsyncMock(return_value=response)
     client.close_incident = AsyncMock()
     return client
 
 
-@pytest.mark.parametrize("post_id", [None, 44])
-def test_direct_lookup_uses_incident_id_and_only_includes_known_post_id(post_id):
+def test_direct_lookup_uses_both_ids():
     client = InsuBizClient("https://example.test", "key", "secret")
     client._request = AsyncMock(return_value=act())
-    result = asyncio.run(client.get_infringing_act(12, post_id))
-    query = {"incidentId": 12}
-    if post_id is not None:
-        query["id"] = post_id
+    result = asyncio.run(client.get_infringing_act(12, 44))
+    query = {"incidentId": 12, "id": 44}
     client._request.assert_awaited_once_with(
         "GET", "/Incident/GetIncidentInfringActByIdAsync", query=query
     )
     assert result["id"] == 44
 
 
+@pytest.mark.parametrize("post_id", [None, 0, -1, True, "44"])
+def test_direct_lookup_rejects_invalid_post_id_before_request(post_id):
+    client = InsuBizClient("https://example.test", "key", "secret")
+    client._request = AsyncMock()
+    with pytest.raises(InsuBizError):
+        asyncio.run(client.get_infringing_act(12, post_id))
+    client._request.assert_not_awaited()
+
+
+def test_list_lookup_filters_incident_status_without_date_or_post_status():
+    client = InsuBizClient("https://example.test", "key", "secret")
+    client._request = AsyncMock(return_value={"data": [], "totalRows": 0})
+    asyncio.run(client.get_infringing_acts_by_status(2, 100, 0))
+    client._request.assert_awaited_once_with(
+        "POST", "/Incident/GetIncidentInfringActsPagedAsync",
+        {"pageNo": 2, "pageSize": 100}, query={"incidentStatusId": 0},
+    )
+
+
 @pytest.mark.parametrize("response", [None, {}])
 def test_empty_direct_response_is_unavailable(response):
     client = InsuBizClient("https://example.test", "key", "secret")
     client._request = AsyncMock(return_value=response)
-    assert asyncio.run(client.get_infringing_act(12)) is None
+    assert asyncio.run(client.get_infringing_act(12, 44)) is None
 
 
 @pytest.mark.parametrize("response", [
@@ -91,7 +110,8 @@ def test_queue_finds_older_post_even_without_incident_timestamp():
     queue = Mock()
     queue.get_item_by_reference.return_value = []
     assert asyncio.run(populate_queue(queue, client, 3)) == 1
-    client.get_infringing_act.assert_awaited_once_with(12)
+    client.get_infringing_act.assert_not_awaited()
+    client.get_infringing_acts_by_status.assert_awaited_once_with(1, 100, 0)
     queue.add_item.assert_called_once_with(
         {"incident_id": 12, "infringing_act_id": 44}, reference="insubiz-incident-12"
     )
@@ -105,6 +125,69 @@ def test_queue_logs_full_case_when_post_is_unavailable(caplog):
     assert "skadenr.=9560" in caplog.text
     assert "fravær=1" in caplog.text
     assert "ikke vurderet" in caplog.text
+    client.get_infringing_act.assert_not_awaited()
+
+
+def test_empty_list_logs_both_new_cases_without_direct_lookup(caplog):
+    client = client_for_workflow()
+    client.find_incidents_by_status.return_value = {
+        "data": [{"id": 12}, {"id": 13}], "totalRows": 2,
+    }
+    client.get_incident.side_effect = [case(), {**case(), "id": 13, "incidentNumberInternal": 9577}]
+    queue = Mock()
+    assert asyncio.run(populate_queue(queue, client, 3)) == 0
+    assert "Sag 12" in caplog.text
+    assert "Sag 13" in caplog.text
+    assert "skadenr.=9577" in caplog.text
+    client.get_infringing_act.assert_not_awaited()
+    queue.add_item.assert_not_called()
+
+
+def test_list_pagination_finds_target_after_short_server_page():
+    client = client_for_workflow(response=act())
+    client.get_infringing_acts_by_status.side_effect = [
+        {"data": [{**act(), "id": 99, "incident": {"id": 99}}], "totalRows": 2},
+        {"data": [act()], "totalRows": 2},
+    ]
+    queue = Mock()
+    queue.get_item_by_reference.return_value = []
+    assert asyncio.run(populate_queue(queue, client, 3)) == 1
+    assert client.get_infringing_acts_by_status.await_args_list == [call(1, 100, 0), call(2, 100, 0)]
+    client.get_incident.assert_awaited_once_with(12)
+    client.get_infringing_act.assert_not_awaited()
+
+
+def test_multiple_distinct_posts_prevent_arbitrary_selection(caplog):
+    client = client_for_workflow(response=act())
+    client.get_infringing_acts_by_status.return_value = {
+        "data": [act(), {**act(), "id": 45}], "totalRows": 2,
+    }
+    queue = Mock()
+    assert asyncio.run(populate_queue(queue, client, 3)) == 0
+    queue.add_item.assert_not_called()
+    assert "2 forskellige krænkelsesposter" in caplog.text
+
+
+@pytest.mark.parametrize("response", [
+    {}, {"data": None}, {"data": [{**act(), "id": 0}], "totalRows": 1},
+    {"data": [{**act(), "incident": None}], "totalRows": 1},
+    {"data": [], "totalRows": 2},
+])
+def test_invalid_or_incomplete_list_fails_before_queue_mutation(response):
+    client = client_for_workflow()
+    client.get_infringing_acts_by_status.return_value = response
+    queue = Mock()
+    with pytest.raises(InsuBizError):
+        asyncio.run(populate_queue(queue, client, 3))
+    queue.add_item.assert_not_called()
+
+
+def test_repeated_list_page_fails_instead_of_looping():
+    client = client_for_workflow(response=act())
+    client.get_infringing_acts_by_status.return_value = {"data": [act()], "totalRows": 2}
+    with pytest.raises(InsuBizError):
+        asyncio.run(populate_queue(Mock(), client, 3))
+    assert client.get_infringing_acts_by_status.await_count == 2
 
 
 @pytest.mark.parametrize("status", [1, 2, 3, None])

@@ -25,8 +25,11 @@ class FakeClient:
             "status": {"id": 0},
         }
 
-    async def get_infringing_act(self, incident_id: int, infringing_act_id: int | None = None) -> dict:
-        return {"id": 44, "incident": {"id": incident_id}, "postActQ1": False, "reactionQ4": True}
+    async def get_infringing_acts_by_status(self, page_no: int, page_size: int, incident_status_id: int) -> dict:
+        return {
+            "data": [{"id": 44, "incident": {"id": 12}, "postActQ1": False, "reactionQ4": True}],
+            "totalRows": 1,
+        }
 
 
 class FakeWorkqueue:
