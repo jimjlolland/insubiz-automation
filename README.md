@@ -73,6 +73,34 @@ Tørkørsel er standard og logger de sager, som ville blive afsluttet. Først n�
 testresultatet er godkendt, ændres credential-data til `"dry_run": "false"`;
 derefter ændrer robotten sagens status til credentialens `closed_status_id`.
 
+## Diagnose af manglende krænkelsesposter
+
+Kør processen i Automation Server med disse parametre for at undersøge konkrete
+sager med den eksisterende credential:
+
+```text
+--diagnose 2494158 2492267
+```
+
+Tallene er API-sags-id'er, ikke skadenumre. Diagnosekørslen kræver ingen
+workqueue og ændrer hverken sager eller køelementer, uanset `dry_run`.
+`--diagnose` og `--queue` kan ikke bruges samtidig.
+
+For hver sag hentes detaljer med `includeDynamicFields=true`. Begge
+krænkelsesliste-endpoints undersøges for sagens kunde uden status- eller
+datofilter, med alle sider og uden regelvurdering af kundens andre sager.
+Fundne poster til de valgte sager genhentes med begge ID'er. Loggen viser
+ID'er, fravær, reaktionsscore, krisehjælp og valgte `violenceTypeQ`-numre.
+Derudover logges dynamiske felters tekniske navne og dokumenters ID'er;
+feltværdier, dokumenttitler og sagsbeskrivelser logges ikke. Dokumenternes
+indhold læses ikke, og dynamiske felter bruges ikke automatisk som erstatning
+for krænkelsespostens felter.
+
+Et opslag, der fejler, markeres i loggen og tælles ikke som en gennemført
+søgning uden resultater. Loggen er grundlag for at vælge næste opslag eller
+for at give InsuBiz-support konkrete eksempler; den kan ikke bevise, at et
+skema ikke findes i brugerfladen.
+
 ## Test
 
 ```sh

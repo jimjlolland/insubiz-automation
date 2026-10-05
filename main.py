@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
@@ -17,10 +18,23 @@ from automation_server_client import (
 )
 
 from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility, reaction_score
+from diagnostics import diagnose_incidents
 
 
 PAGE_SIZE = 100
 DEFAULT_ACTIVE_INCIDENT_STATUS_IDS = (0,)
+
+
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--queue", action="store_true", help="Opbyg køen med kvalificerede nye sager")
+    mode.add_argument("--diagnose", nargs="+", type=int, metavar="INCIDENT_ID",
+                      help="Undersøg krænkelsesposter for disse API-sags-id'er uden at ændre data")
+    args = parser.parse_args(argv)
+    if args.diagnose and any(value <= 0 for value in args.diagnose):
+        parser.error("--diagnose kræver positive API-sags-id'er")
+    return args
 
 
 def configure_logging() -> None:
@@ -364,12 +378,15 @@ async def process_workqueue(
 
 
 if __name__ == "__main__":
+    args = parse_arguments()
     ats = AutomationServer.from_environment()
-    workqueue = ats.workqueue()
     configure_logging()
     try:
         configuration = insubiz_client_from_credential()
-        if "--queue" in sys.argv:
+        if args.diagnose:
+            asyncio.run(diagnose_incidents(configuration.client, args.diagnose))
+        elif args.queue:
+            workqueue = ats.workqueue()
             logging.getLogger(__name__).info(
                 "Starter køopbygning (lukket status-id: %s, aktive status-id'er: %s)",
                 configuration.closed_status_id,
@@ -384,6 +401,7 @@ if __name__ == "__main__":
                 )
             )
         else:
+            workqueue = ats.workqueue()
             logging.getLogger(__name__).info(
                 "Starter købehandling (%s)",
                 "tørkørsel" if configuration.dry_run else "opdatering af sager",

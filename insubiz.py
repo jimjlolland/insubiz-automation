@@ -97,6 +97,16 @@ class InsuBizClient:
             query={"incidentStatusId": incident_status_id},
         )
 
+    async def get_customer_infringing_acts(
+        self, page_no: int, page_size: int, customer_id: int, *, search: bool = False
+    ) -> dict[str, Any]:
+        endpoint = "FindInfringingActsPagedAsync" if search else "GetIncidentInfringActsPagedAsync"
+        return await self._request(
+            "POST", f"/Incident/{endpoint}",
+            {"pageNo": page_no, "pageSize": page_size},
+            query={"customerId": customer_id},
+        )
+
     async def get_infringing_act(
         self, incident_id: int, infringing_act_id: int
     ) -> dict[str, Any] | None:
@@ -125,8 +135,21 @@ class InsuBizClient:
             )
         return response
 
-    async def get_incident(self, incident_id: int) -> dict[str, Any]:
-        return await self._request("GET", "/Incident/GetIncidentByIdAsync", query={"id": incident_id})
+    async def get_incident(
+        self, incident_id: int, *, include_dynamic_fields: bool = False
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"id": incident_id}
+        if include_dynamic_fields:
+            query["includeDynamicFields"] = "true"
+        return await self._request("GET", "/Incident/GetIncidentByIdAsync", query=query)
+
+    async def get_incident_documents(self, incident_id: int) -> list[dict[str, Any]]:
+        response = await self._request(
+            "GET", "/Incident/GetIncidentDocuments", query={"incidentId": incident_id}
+        )
+        if not isinstance(response, list):
+            raise InsuBizError("Dokumentopslaget returnerede ikke en liste")
+        return response
 
     async def close_incident(self, incident_id: int, closed_status_id: int) -> None:
         await self._request("POST", "/Incident/UpdateIncidentFieldsAsync", {"recordId": incident_id, "fields": [{"name": "status", "value": str(closed_status_id)}]})
