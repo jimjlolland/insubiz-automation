@@ -37,6 +37,8 @@ def client_for_workflow(status=0, response=None):
         return_value={"data": [response] if response else [], "totalRows": 1 if response else 0}
     )
     client.get_infringing_act = AsyncMock(return_value=response)
+    client.get_incident_documents = AsyncMock(return_value=[])
+    client.system_owner_id = 141
     client.close_incident = AsyncMock()
     return client
 

@@ -138,10 +138,16 @@ class InsuBizClient:
     async def get_incident(
         self, incident_id: int, *, include_dynamic_fields: bool = False
     ) -> dict[str, Any]:
+        if type(incident_id) is not int or incident_id <= 0:
+            raise InsuBizError("Sagsopslag kræver et positivt API-sags-id")
         query: dict[str, Any] = {"id": incident_id}
         if include_dynamic_fields:
             query["includeDynamicFields"] = "true"
-        return await self._request("GET", "/Incident/GetIncidentByIdAsync", query=query)
+        response = await self._request("GET", "/Incident/GetIncidentByIdAsync", query=query)
+        if (not isinstance(response, dict) or type(response.get("id")) is not int
+                or response["id"] != incident_id):
+            raise InsuBizError("Sagsopslaget returnerede ikke det forventede API-sags-id")
+        return response
 
     async def get_incident_documents(self, incident_id: int) -> list[dict[str, Any]]:
         response = await self._request(
@@ -150,6 +156,35 @@ class InsuBizClient:
         if not isinstance(response, list):
             raise InsuBizError("Dokumentopslaget returnerede ikke en liste")
         return response
+
+    async def download_incident_document(self, document_id: int) -> bytes:
+        if type(document_id) is not int or document_id <= 0:
+            raise InsuBizError("Dokumentdownload kræver et positivt dokument-id")
+        if not self.token:
+            raise InsuBizError("InsuBiz-klienten er ikke logget ind")
+        path = "/Incident/DownloadDocumentAsync"
+        url = f"{self.base_url}{API_VERSION_PATH}{path}?{urlencode({'documentId': document_id})}"
+        request = Request(url, headers={"Accept": "application/pdf, application/octet-stream",
+                                       "Authorization": f"Bearer {self.token}"})
+
+        def send() -> bytes:
+            try:
+                with urlopen(request, timeout=30) as response:
+                    content = response.read(25 * 1024 * 1024 + 1)
+                if len(content) > 25 * 1024 * 1024:
+                    raise InsuBizError("PDF-dokumentet overskrider grænsen på 25 MB")
+                if not content.startswith(b"%PDF-"):
+                    raise InsuBizError("Dokumentdownload returnerede ikke en PDF")
+                return content
+            except HTTPError as error:
+                # A document download can contain personal data, including on errors.
+                raise InsuBizError(f"GET {path} fejlede ({error.code})") from error
+            except URLError as error:
+                raise InsuBizError("Kunne ikke hente PDF-dokument fra InsuBiz") from error
+            except TimeoutError as error:
+                raise InsuBizError("Timeout ved download af PDF-dokument fra InsuBiz") from error
+
+        return await asyncio.to_thread(send)
 
     async def close_incident(self, incident_id: int, closed_status_id: int) -> None:
         await self._request("POST", "/Incident/UpdateIncidentFieldsAsync", {"recordId": incident_id, "fields": [{"name": "status", "value": str(closed_status_id)}]})

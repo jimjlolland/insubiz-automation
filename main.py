@@ -19,6 +19,7 @@ from automation_server_client import (
 
 from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility, reaction_score
 from diagnostics import diagnose_incidents
+from report_pdf import read_incident_pdf_report
 
 
 PAGE_SIZE = 100
@@ -222,7 +223,7 @@ async def populate_queue(
     processed_incident_ids: set[int] = set()
     for incident_summary in incident_summaries:
         incident_id = incident_summary.get("id")
-        if not isinstance(incident_id, int):
+        if type(incident_id) is not int or incident_id <= 0:
             logger.warning("Springer søgeresultat uden gyldigt sags-id over")
             continue
         if incident_id in processed_incident_ids:
@@ -245,22 +246,34 @@ async def populate_queue(
             continue
         acts = acts_by_incident.get(incident_id, {})
         if not acts:
-            skipped_missing_act += 1
-            logger.warning(
-                "Sag %s: ingen matchende krænkelsespost i listeopslaget med incidentStatusId=0; "
-                "sagen er ikke vurderet (%s)", incident_id, format_case_context(incident)
-            )
-            continue
-        if len(acts) != 1:
+            logger.info("Sag %s: ingen API-krænkelsespost; undersøger vedhæftede PDF-rapporter", incident_id)
+            try:
+                result = await read_incident_pdf_report(client, incident)
+                if result is None:
+                    raise InsuBizError("ingen genkendelig krænkelsesrapport i sagens PDF-dokumenter")
+            except InsuBizError as error:
+                skipped_missing_act += 1
+                logger.warning("Sag %s: ikke vurderet: %s (%s)",
+                               incident_id, error, format_case_context(incident))
+                continue
+            report, document_id = result
+            act = report.as_infringing_act()
+            item_data = {"incident_id": incident_id, "source": "pdf_report",
+                         "report_document_id": document_id}
+            logger.info("Sag %s: bruger PDF-rapport fra dokument %s (%s)",
+                        incident_id, document_id, format_case_context(incident, act))
+        elif len(acts) != 1:
             skipped_ambiguous_act += 1
             logger.warning(
                 "Sag %s: listeopslaget returnerede %s forskellige krænkelsesposter; "
                 "sagen er ikke vurderet (%s)", incident_id, len(acts), format_case_context(incident)
             )
             continue
-        act = next(iter(acts.values()))
-        act_id = act["id"]
-        logger.info("Sag %s: fundet krænkelsespost %s i listeopslaget", incident_id, act_id)
+        else:
+            act = next(iter(acts.values()))
+            act_id = act["id"]
+            item_data = {"incident_id": incident_id, "infringing_act_id": act_id}
+            logger.info("Sag %s: fundet krænkelsespost %s i listeopslaget", incident_id, act_id)
         decision = evaluate_eligibility(incident, act)
         if not decision.eligible:
             skipped_ineligible += 1
@@ -284,7 +297,7 @@ async def populate_queue(
             )
             continue
         workqueue.add_item(
-            {"incident_id": incident_id, "infringing_act_id": act_id},
+            item_data,
             reference=reference,
         )
         queued_count += 1
@@ -298,7 +311,7 @@ async def populate_queue(
     logger.info(
         "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, "
         "%s opfyldte ikke reglerne, %s fandtes allerede i køen, "
-        "%s havde anden status end Ny, %s kunne ikke vurderes uden krænkelsespost, "
+        "%s havde anden status end Ny, %s kunne ikke vurderes via API eller PDF, "
         "%s havde flere krænkelsesposter",
         queued_count,
         skipped_closed,
@@ -328,9 +341,14 @@ async def process_workqueue(
             with item:
                 incident_id = item.data.get("incident_id")
                 act_id = item.data.get("infringing_act_id")
-                if not isinstance(incident_id, int) or not isinstance(act_id, int):
+                source = item.data.get("source", "api")
+                document_id = item.data.get("report_document_id")
+                if (type(incident_id) is not int or incident_id <= 0
+                        or source not in {"api", "pdf_report"}
+                        or (source == "api" and (type(act_id) is not int or act_id <= 0))
+                        or (source == "pdf_report" and (type(document_id) is not int or document_id <= 0))):
                     raise WorkItemError(
-                        "Work item mangler gyldigt incident_id eller infringing_act_id"
+                        "Work item mangler gyldigt sags-id eller kilde-id"
                     )
                 incident = await client.get_incident(incident_id)
                 if (incident.get("status") or {}).get("id") == closed_status_id:
@@ -344,7 +362,15 @@ async def process_workqueue(
                     logger.info("Sag %s springes over: status er ikke Ny (%s)",
                                 incident_id, format_case_context(incident))
                     continue
-                act = await client.get_infringing_act(incident_id, act_id)
+                if source == "pdf_report":
+                    result = await read_incident_pdf_report(client, incident, required_document_id=document_id)
+                    if result is None:
+                        raise WorkItemError(f"Sag {incident_id}: PDF-rapport kunne ikke hentes")
+                    report, _ = result
+                    act = report.as_infringing_act()
+                    logger.info("Sag %s: genaflæst PDF-rapport fra dokument %s", incident_id, document_id)
+                else:
+                    act = await client.get_infringing_act(incident_id, act_id)
                 if act is None:
                     raise WorkItemError(f"Sag {incident_id}: krænkelsespost kunne ikke hentes")
                 decision = evaluate_eligibility(incident, act)

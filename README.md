@@ -13,7 +13,8 @@ alle tre regler fra procesbeskrivelsen er opfyldt:
 Den bruger InsuBiz API 1.3-endepunkterne `SignInAsync`,
 `FindIncidentsPagedAsync`, `GetIncidentInfringActsPagedAsync`,
 `GetIncidentInfringActByIdAsync`,
-`GetIncidentByIdAsync` og `UpdateIncidentFieldsAsync` fra `swagger.json`.
+`GetIncidentByIdAsync`, `GetIncidentDocuments`, `DownloadDocumentAsync`
+og `UpdateIncidentFieldsAsync` fra `swagger.json`.
 
 ## Automation Server-konfiguration
 
@@ -37,24 +38,38 @@ argumenter for at behandle køen. Hvert work item bliver automatisk markeret
 som completed eller failed af Automation Server.
 
 `incident_status_ids` begrænser opslaget hos InsuBiz. Standardværdien `0` er
-**Ny** i Insight-visningen (klassifikationen kalder den `Xnet indbakke`), så
+**Ny** i klassifikationen `claim_status_insight`, så
 robotten kun gennemgår nye sager.
 
 Køopbygningen henter krænkelsesposter via
 `GetIncidentInfringActsPagedAsync?incidentStatusId=0`, uden datofilter eller
 filter på krænkelsespostens egen status. Alle sider indlæses og kobles til
 de fundne sager via `incident.id`. Kun én entydig post pr. sag kan lægges i
-køen; manglende eller flere forskellige poster logges som ikke vurderet.
+køen. Flere forskellige poster logges som ikke vurderet.
 Sagsdetaljerne hentes separat for at kontrollere status og fravær.
+
+Når krænkelsesposten mangler i API-listen, undersøger robotten sagens
+vedhæftede PDF-dokumenter. Den bruger kun ét entydigt **Skema for krænkende
+handlinger**, hvor skadenummer og den konfigurerede systemejer matcher.
+Reaktionsskalaens ti felter og krisehjælpsfeltet findes via tekst og
+afkrydsningsfelternes geometri. Den genkendte trykte markering aflæses med
+PyMuPDF og kontrolleres mod de synlige pixels. Score 7 accepteres.
+Billedbaserede PDF'er, ukendte markeringer, manglende svar og flere rapporter
+kræver manuel vurdering. PDF-tekster og dokumenttitler logges ikke, og
+dokumenterne gemmes ikke på disk.
 
 Ved købehandling genhentes posten via
 `GetIncidentInfringActByIdAsync?incidentId=<sags-id>&id=<post-id>`.
 Begge ID'er er påkrævet i klienten, og svarets ID'er kontrolleres.
 Der foretages aldrig direkte opslag med kun `incidentId`, da denne form
-gav HTTP 500 i testen mod InsuBiz.
+gav HTTP 500 i testen mod InsuBiz. PDF-baserede køelementer gemmer i stedet
+`source=pdf_report` og `report_document_id`. Ved købehandling genhentes
+dokumentlisten og rapporten, sagstilknytningen bekræftes, og alle regler
+vurderes igen. En fjernet, erstattet eller flertydig rapport forhindrer
+afslutning.
 
-Hvis API'et fortsat returnerer en tom liste for Ny, kan robotten ikke vurdere
-de nye sager. Dette logges for hver sag og i optællingen til sidst; det
+Hvis hverken API-post eller entydig PDF-rapport kan findes, vurderes sagen
+ikke. Dette logges for hver sag og i optællingen til sidst; det
 betyder ikke, at sagerne er vurderet og afvist af forretningsreglerne.
 Lokale tests bruger simulerede API-svar.
 
@@ -72,6 +87,8 @@ uv run python main.py
 Tørkørsel er standard og logger de sager, som ville blive afsluttet. Først når
 testresultatet er godkendt, ændres credential-data til `"dry_run": "false"`;
 derefter ændrer robotten sagens status til credentialens `closed_status_id`.
+`--queue` opretter stadig køelementer ved tørkørsel; `dry_run` beskytter mod
+ændringer af sagens status ved behandling af køen.
 
 ## Diagnose af manglende krænkelsesposter
 
@@ -92,9 +109,10 @@ datofilter, med alle sider og uden regelvurdering af kundens andre sager.
 Fundne poster til de valgte sager genhentes med begge ID'er. Loggen viser
 ID'er, fravær, reaktionsscore, krisehjælp og valgte `violenceTypeQ`-numre.
 Derudover logges dynamiske felters tekniske navne og dokumenters ID'er;
-feltværdier, dokumenttitler og sagsbeskrivelser logges ikke. Dokumenternes
-indhold læses ikke, og dynamiske felter bruges ikke automatisk som erstatning
-for krænkelsespostens felter.
+feltværdier, dokumenttitler og sagsbeskrivelser logges ikke. Vedhæftede PDF'er
+læses også, og en entydig rapport logges med dokument-id, skadenummer,
+reaktionsscore og krisehjælp. Dynamiske felter bruges ikke automatisk som
+erstatning for krænkelsespostens felter.
 
 Et opslag, der fejler, markeres i loggen og tælles ikke som en gennemført
 søgning uden resultater. Loggen er grundlag for at vælge næste opslag eller

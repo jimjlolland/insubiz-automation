@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "automation-server-client",
+    "pymupdf>=1.27.2,<2",
 ]
 
 [tool.uv.sources]

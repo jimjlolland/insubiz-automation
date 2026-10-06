@@ -3,6 +3,7 @@
 import logging
 
 from insubiz import InsuBizClient, InsuBizError, reaction_score
+from report_pdf import read_incident_pdf_report
 
 logger = logging.getLogger(__name__)
 PAGE_SIZE = 100
@@ -134,6 +135,15 @@ async def diagnose_incidents(client: InsuBizClient, incident_ids: list[int]) -> 
                 "DIAGNOSE: sag %s har %s dokumenter, dokument-id'er=%s; "
                 "titler og indhold logges ikke", incident_id, len(documents), document_ids,
             )
+            result = await read_incident_pdf_report(client, incident, documents=documents)
+            if result is not None:
+                report, document_id = result
+                logger.info("DIAGNOSE: sag %s, PDF-dokument=%s, skadenr.=%s, "
+                            "reaktionsscore=%s, krisehjælp=%s",
+                            incident_id, document_id, report.incident_number,
+                            report.score, "ja" if report.crisis_help else "nej")
+            else:
+                logger.warning("DIAGNOSE: sag %s: ingen genkendelig krænkelsesrapport i PDF-dokumenterne", incident_id)
         except InsuBizError as error:
             logger.error("DIAGNOSE: dokumentopslag for sag %s fejlede: %s", incident_id, error)
     logger.info("DIAGNOSE afsluttet; se eventuelle fejl ovenfor. Ingen sager eller køelementer er ændret.")
