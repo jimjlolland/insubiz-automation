@@ -1,4 +1,4 @@
-"""Automation Server process for InsuBiz Automatisering 2."""
+"""Automation Server entry point for InsuBiz Automatisering 2."""
 
 from __future__ import annotations
 
@@ -6,24 +6,17 @@ import argparse
 import asyncio
 import logging
 import os
-import sys
-from dataclasses import dataclass
 
-from automation_server_client import (
-    AutomationServer,
-    Credential,
-    WorkItemError,
-    WorkItemStatus,
-    Workqueue,
-)
+import httpx
+from automation_server_client import AutomationServer
 
-from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility, reaction_score
+from configuration import configuration_from_process
 from diagnostics import diagnose_incidents
-from report_pdf import read_incident_pdf_report
+from insubiz import InsuBizError
+from workflow import populate_queue, process_workqueue
 
 
-PAGE_SIZE = 100
-DEFAULT_ACTIVE_INCIDENT_STATUS_IDS = (0,)
+logger = logging.getLogger(__name__)
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -31,7 +24,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--queue", action="store_true", help="Opbyg køen med kvalificerede nye sager")
     mode.add_argument("--diagnose", nargs="+", type=int, metavar="INCIDENT_ID",
-                      help="Undersøg krænkelsesposter for disse API-sags-id'er uden at ændre data")
+                      help="Undersøg disse API-sags-id'er uden at ændre data")
     args = parser.parse_args(argv)
     if args.diagnose and any(value <= 0 for value in args.diagnose):
         parser.error("--diagnose kræver positive API-sags-id'er")
@@ -39,407 +32,50 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def configure_logging() -> None:
-    """Show process events in the run output and keep HTTP client noise out."""
-    root_logger = logging.getLogger()
-    root_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
-    if not any(getattr(handler, "_insubiz_console", False) for handler in root_logger.handlers):
-        console_handler = logging.StreamHandler()
-        console_handler._insubiz_console = True  # type: ignore[attr-defined]
-        console_handler.setFormatter(
-            logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-        )
-        root_logger.addHandler(console_handler)
-
-    # The Automation Server client writes each log event to its audit API.  Do
-    # not log those HTTP calls too, as that produces a stream of 204 responses.
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    # Keep the client's audit-log HTTP calls out of the case log.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-@dataclass(frozen=True)
-class InsuBizConfiguration:
-    client: InsuBizClient
-    closed_status_id: int
-    active_incident_status_ids: tuple[int, ...]
-    dry_run: bool
-
-
-def parse_status_ids(value: object) -> tuple[int, ...]:
-    """Parse a comma-separated credential setting with a safe default."""
-    if value is None or not str(value).strip():
-        return DEFAULT_ACTIVE_INCIDENT_STATUS_IDS
-    status_ids = tuple(int(part.strip()) for part in str(value).split(",") if part.strip())
-    if not status_ids:
-        raise ValueError("incident_status_ids skal indeholde mindst ét status-id")
-    return status_ids
-
-
-def format_list_item(value: object) -> str:
-    """Render InsuBiz classification values without logging free-text case data."""
-    if not isinstance(value, dict):
-        return "ikke oplyst"
-    text = value.get("text")
-    item_id = value.get("id")
-    if text and item_id is not None:
-        return f"{text} ({item_id})"
-    if text:
-        return str(text)
-    if item_id is not None:
-        return str(item_id)
-    return "ikke oplyst"
-
-
-def format_case_context(incident: dict, infringing_act: dict | None = None) -> str:
-    """Create a concise, non-sensitive summary for an individual case log."""
-    personal_injury = incident.get("personalInjury") or {}
-    parts = [
-        f"skadenr.={incident.get('incidentNumberInternal', 'ikke oplyst')}",
-        f"status={format_list_item(incident.get('status'))}",
-        f"fravær={format_list_item(personal_injury.get('accidentDuration'))}",
-    ]
-    if infringing_act is not None:
-        crisis_help = infringing_act.get("postActQ1")
-        crisis_help_text = "ja" if crisis_help is True else "nej" if crisis_help is False else "ikke oplyst"
-        score = reaction_score(infringing_act)
-        parts.extend(
-            [
-                f"krisehjælp={crisis_help_text}",
-                f"reaktionsscore={score if score is not None else 'mangler/flere svar'}",
-            ]
-        )
-    return ", ".join(parts)
-
-
-def insubiz_client_from_credential() -> InsuBizConfiguration:
-    """Read InsuBiz secrets from Automation Server's encrypted credential store."""
-    credential_name = os.getenv("INSUBIZ_CREDENTIAL_NAME", "InsuBiz API")
-    credential = Credential.get_credential(credential_name)
-    data = credential.data
-    base_url = data.get("base_url") or os.getenv("INSUBIZ_BASE_URL")
-    api_key = credential.username or data.get("api_key") or os.getenv("INSUBIZ_API_KEY")
-    secret_key = credential.password or data.get("secret_key") or os.getenv("INSUBIZ_SECRET_KEY")
-    closed_status_id = data.get("closed_status_id") or os.getenv("INSUBIZ_CLOSED_STATUS_ID")
-    system_owner_id = data.get("system_owner_id")
-    if not base_url or not api_key or not secret_key or not closed_status_id:
-        raise InsuBizError(
-            "Credentialen skal indeholde base_url, api_key, secret_key og closed_status_id"
-        )
-    dry_run = str(data.get("dry_run", "true")).lower() in {"1", "true", "yes"}
-    return InsuBizConfiguration(
-        client=InsuBizClient(
-            base_url,
-            api_key,
-            secret_key,
-            system_owner_id=int(system_owner_id) if system_owner_id else None,
-        ),
-        closed_status_id=int(closed_status_id),
-        active_incident_status_ids=parse_status_ids(
-            data.get("incident_status_ids") or os.getenv("INSUBIZ_INCIDENT_STATUS_IDS")
-        ),
-        dry_run=dry_run,
-    )
-
-
-async def load_new_infringing_acts(client: InsuBizClient) -> dict[int, dict[int, dict]]:
-    """Index all returned new-case posts by incident id and post id."""
-    logger = logging.getLogger(__name__)
-    posts: dict[int, dict[int, dict]] = {}
-    seen: set[tuple[int, int]] = set()
-    page_no = 1
-    logger.info("Henter krænkelsesposter via GetIncidentInfringActsPagedAsync med incidentStatusId=0 uden datofilter")
-    while True:
-        result = await client.get_infringing_acts_by_status(page_no, PAGE_SIZE, 0)
-        if not isinstance(result, dict) or not isinstance(result.get("data"), list):
-            raise InsuBizError("Krænkelseslisten har ugyldig struktur; forventede data som liste")
-        acts = result["data"]
-        total = result.get("totalRows")
-        if total is not None and (type(total) is not int or total < 0):
-            raise InsuBizError("Krænkelseslisten har ugyldigt totalRows")
-        logger.info(
-            "Krænkelsesposter for status Ny: side %s indeholder %s, totalRows=%s",
-            page_no, len(acts), total if total is not None else "ukendt",
-        )
-        previous_count = len(seen)
-        for act in acts:
-            linked_incident = act.get("incident") if isinstance(act, dict) else None
-            incident_id = linked_incident.get("id") if isinstance(linked_incident, dict) else None
-            act_id = act.get("id") if isinstance(act, dict) else None
-            if any(type(value) is not int or value <= 0 for value in (incident_id, act_id)):
-                raise InsuBizError("Krænkelseslisten indeholder en post uden gyldigt sags-id eller post-id")
-            seen.add((incident_id, act_id))
-            posts.setdefault(incident_id, {})[act_id] = act
-        if total is not None and len(seen) >= total:
-            return posts
-        if total is None and len(acts) < PAGE_SIZE:
-            return posts
-        if len(seen) == previous_count:
-            raise InsuBizError("Krænkelseslisten kunne ikke indlæses fuldt: ingen nye poster på næste side")
-        page_no += 1
-
-
-async def populate_queue(
-    workqueue: Workqueue,
-    client: InsuBizClient,
-    closed_status_id: int,
-    active_incident_status_ids: tuple[int, ...] = DEFAULT_ACTIVE_INCIDENT_STATUS_IDS,
-) -> int:
-    """Find eligible cases and add one auditable work item per incident."""
-    logger = logging.getLogger(__name__)
-    logger.info("Logger ind i InsuBiz og henter krænkelsessager")
-    await client.authenticate()
-    logger.info("InsuBiz-login lykkedes")
-
-    incident_summaries: list[dict] = []
-    for incident_status_id in active_incident_status_ids:
-        if incident_status_id != 0:
-            logger.warning("Status-id %s ignoreres: kun Ny (0) behandles", incident_status_id)
-            continue
-        page_no = 1
-        while True:
-            incident_search = await client.find_incidents_by_status(
-                page_no, PAGE_SIZE, incident_status_id
-            )
-            incidents = incident_search.get("data") or []
-            logger.info(
-                "InsuBiz finder %s sager med status-id %s; side %s indeholder %s",
-                incident_search.get("totalRows", "ukendt antal"),
-                incident_status_id,
-                page_no,
-                len(incidents),
-            )
-            incident_summaries.extend(incidents)
-            if len(incidents) < PAGE_SIZE:
-                break
-            page_no += 1
-
-    acts_by_incident = await load_new_infringing_acts(client) if incident_summaries else {}
-    queued_count = 0
-    skipped_closed = 0
-    skipped_status = 0
-    skipped_missing_act = 0
-    skipped_ambiguous_act = 0
-    skipped_ineligible = 0
-    skipped_existing = 0
-    processed_incident_ids: set[int] = set()
-    for incident_summary in incident_summaries:
-        incident_id = incident_summary.get("id")
-        if type(incident_id) is not int or incident_id <= 0:
-            logger.warning("Springer søgeresultat uden gyldigt sags-id over")
-            continue
-        if incident_id in processed_incident_ids:
-            continue
-        processed_incident_ids.add(incident_id)
-
-        incident = await client.get_incident(incident_id)
-        if (incident.get("status") or {}).get("id") == closed_status_id:
-            skipped_closed += 1
-            logger.info(
-                "Sag %s springes over: allerede afsluttet (%s)",
-                incident_id,
-                format_case_context(incident),
-            )
-            continue
-        if (incident.get("status") or {}).get("id") != 0:
-            skipped_status += 1
-            logger.info("Sag %s springes over: status er ikke Ny (%s)",
-                        incident_id, format_case_context(incident))
-            continue
-        acts = acts_by_incident.get(incident_id, {})
-        if not acts:
-            logger.info("Sag %s: ingen API-krænkelsespost; undersøger vedhæftede PDF-rapporter", incident_id)
-            try:
-                result = await read_incident_pdf_report(client, incident)
-                if result is None:
-                    raise InsuBizError("ingen genkendelig krænkelsesrapport i sagens PDF-dokumenter")
-            except InsuBizError as error:
-                skipped_missing_act += 1
-                logger.warning("Sag %s: ikke vurderet: %s (%s)",
-                               incident_id, error, format_case_context(incident))
-                continue
-            report, document_id = result
-            act = report.as_infringing_act()
-            item_data = {"incident_id": incident_id, "source": "pdf_report",
-                         "report_document_id": document_id}
-            logger.info("Sag %s: bruger PDF-rapport fra dokument %s (%s)",
-                        incident_id, document_id, format_case_context(incident, act))
-        elif len(acts) != 1:
-            skipped_ambiguous_act += 1
-            logger.warning(
-                "Sag %s: listeopslaget returnerede %s forskellige krænkelsesposter; "
-                "sagen er ikke vurderet (%s)", incident_id, len(acts), format_case_context(incident)
-            )
-            continue
-        else:
-            act = next(iter(acts.values()))
-            act_id = act["id"]
-            item_data = {"incident_id": incident_id, "infringing_act_id": act_id}
-            logger.info("Sag %s: fundet krænkelsespost %s i listeopslaget", incident_id, act_id)
-        decision = evaluate_eligibility(incident, act)
-        if not decision.eligible:
-            skipped_ineligible += 1
-            logger.info(
-                "Sag %s beholdes åben: %s (%s)",
-                incident_id,
-                decision.reason,
-                format_case_context(incident, act),
-            )
-            continue
-
-        reference = f"insubiz-incident-{incident_id}"
-        active_items = workqueue.get_item_by_reference(reference, WorkItemStatus.NEW)
-        active_items += workqueue.get_item_by_reference(reference, WorkItemStatus.IN_PROGRESS)
-        if active_items:
-            skipped_existing += 1
-            logger.info(
-                "Sag %s findes allerede i køen (%s)",
-                incident_id,
-                format_case_context(incident, act),
-            )
-            continue
-        workqueue.add_item(
-            item_data,
-            reference=reference,
-        )
-        queued_count += 1
-        logger.info(
-            "Sag %s er lagt i køen: %s (%s)",
-            incident_id,
-            decision.reason,
-            format_case_context(incident, act),
-        )
-
-    logger.info(
-        "Indlæsning afsluttet: %s lagt i køen, %s allerede afsluttet, "
-        "%s opfyldte ikke reglerne, %s fandtes allerede i køen, "
-        "%s havde anden status end Ny, %s kunne ikke vurderes via API eller PDF, "
-        "%s havde flere krænkelsesposter",
-        queued_count,
-        skipped_closed,
-        skipped_ineligible,
-        skipped_existing,
-        skipped_status,
-        skipped_missing_act,
-        skipped_ambiguous_act,
-    )
-    return queued_count
-
-
-async def process_workqueue(
-    workqueue: Workqueue,
-    client: InsuBizClient,
-    closed_status_id: int,
-    dry_run: bool,
-) -> int:
-    """Recheck and process each queued case in an Automation Server work-item context."""
-    logger = logging.getLogger(__name__)
-    logger.info("Logger ind i InsuBiz for at behandle køen")
-    await client.authenticate()
-    logger.info("InsuBiz-login lykkedes")
-    processed_count = 0
-    for item in workqueue:
-        try:
-            with item:
-                incident_id = item.data.get("incident_id")
-                act_id = item.data.get("infringing_act_id")
-                source = item.data.get("source", "api")
-                document_id = item.data.get("report_document_id")
-                if (type(incident_id) is not int or incident_id <= 0
-                        or source not in {"api", "pdf_report"}
-                        or (source == "api" and (type(act_id) is not int or act_id <= 0))
-                        or (source == "pdf_report" and (type(document_id) is not int or document_id <= 0))):
-                    raise WorkItemError(
-                        "Work item mangler gyldigt sags-id eller kilde-id"
-                    )
-                incident = await client.get_incident(incident_id)
-                if (incident.get("status") or {}).get("id") == closed_status_id:
-                    logger.info(
-                        "Sag %s er allerede afsluttet (%s)",
-                        incident_id,
-                        format_case_context(incident),
-                    )
-                    continue
-                if (incident.get("status") or {}).get("id") != 0:
-                    logger.info("Sag %s springes over: status er ikke Ny (%s)",
-                                incident_id, format_case_context(incident))
-                    continue
-                if source == "pdf_report":
-                    result = await read_incident_pdf_report(client, incident, required_document_id=document_id)
-                    if result is None:
-                        raise WorkItemError(f"Sag {incident_id}: PDF-rapport kunne ikke hentes")
-                    report, _ = result
-                    act = report.as_infringing_act()
-                    logger.info("Sag %s: genaflæst PDF-rapport fra dokument %s", incident_id, document_id)
-                else:
-                    act = await client.get_infringing_act(incident_id, act_id)
-                if act is None:
-                    raise WorkItemError(f"Sag {incident_id}: krænkelsespost kunne ikke hentes")
-                decision = evaluate_eligibility(incident, act)
-                if not decision.eligible:
-                    logger.info(
-                        "Sag %s beholdes åben: %s (%s)",
-                        incident_id,
-                        decision.reason,
-                        format_case_context(incident, act),
-                    )
-                    continue
-                if dry_run:
-                    logger.info(
-                        "TØRKØRSEL: sag %s ville blive afsluttet: %s (%s)",
-                        incident_id,
-                        decision.reason,
-                        format_case_context(incident, act),
-                    )
-                else:
-                    await client.close_incident(incident_id, closed_status_id)
-                    logger.info(
-                        "Sag %s er afsluttet: %s (%s)",
-                        incident_id,
-                        decision.reason,
-                        format_case_context(incident, act),
-                    )
-                processed_count += 1
-        except Exception:
-            logger.exception("Work item %s fejlede", item.id)
-    return processed_count
-
-
-if __name__ == "__main__":
-    args = parse_arguments()
-    ats = AutomationServer.from_environment()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_arguments(argv)
     configure_logging()
     try:
-        configuration = insubiz_client_from_credential()
+        ats = AutomationServer.from_environment()
+        configuration = configuration_from_process(ats)
         if args.diagnose:
             asyncio.run(diagnose_incidents(configuration.client, args.diagnose))
-        elif args.queue:
-            workqueue = ats.workqueue()
-            logging.getLogger(__name__).info(
+            return 0
+
+        workqueue = ats.workqueue()
+        if args.queue:
+            logger.info(
                 "Starter køopbygning (lukket status-id: %s, aktive status-id'er: %s)",
                 configuration.closed_status_id,
                 ", ".join(map(str, configuration.active_incident_status_ids)),
             )
-            asyncio.run(
-                populate_queue(
-                    workqueue,
-                    configuration.client,
-                    configuration.closed_status_id,
-                    configuration.active_incident_status_ids,
-                )
-            )
+            asyncio.run(populate_queue(
+                workqueue, configuration.client, configuration.closed_status_id,
+                configuration.active_incident_status_ids,
+            ))
         else:
-            workqueue = ats.workqueue()
-            logging.getLogger(__name__).info(
-                "Starter købehandling (%s)",
-                "tørkørsel" if configuration.dry_run else "opdatering af sager",
-            )
-            asyncio.run(
-                process_workqueue(
-                    workqueue,
-                    configuration.client,
-                    configuration.closed_status_id,
-                    configuration.dry_run,
-                )
-            )
+            logger.info("Starter købehandling (%s)",
+                        "tørkørsel" if configuration.dry_run else "opdatering af sager")
+            asyncio.run(process_workqueue(
+                workqueue, configuration.client, configuration.closed_status_id,
+                configuration.dry_run,
+            ))
+        return 0
     except (InsuBizError, ValueError) as error:
-        logging.getLogger(__name__).error("Automatiseringen stoppede: %s", error)
-        sys.exit(1)
+        logger.error("Automatiseringen stoppede: %s", error)
+    except httpx.HTTPError:
+        logger.error("Automatiseringen stoppede: opslag i Automation Server fejlede")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

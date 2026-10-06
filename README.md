@@ -18,7 +18,7 @@ og `UpdateIncidentFieldsAsync` fra `swagger.json`.
 
 ## Automation Server-konfiguration
 
-Opret en credential i Automation Server med navnet `InsuBiz API`. Indtast
+Opret en credential i Automation Server med et navn, du selv vælger. Indtast
 InsuBiz API-nøglen i feltet **Username** og den hemmelige nøgle i **Password**.
 Indtast dette i credentialens **Data**-felt:
 
@@ -32,7 +32,25 @@ Indtast dette i credentialens **Data**-felt:
 }
 ```
 
-Tilknyt en workqueue til processen. Planlæg først processen med `--queue` for
+Tilknyt credentialen til processens **Process credentials** (`credentials_id`).
+Automatiseringen henter den valgte credential via ID for den aktuelle proces;
+den bruger hverken et fast navn eller InsuBiz-miljøvariabler. Credentialen kan
+omdøbes, og forskellige processer kan vælge forskellige credentials.
+
+**Git credentials** (`target_credentials_id`) bruges af Automation Server til
+at klone repositoryet. Odenses offentlige procesformular viser aktuelt kun
+dette felt. Hvis din version heller ikke har **Process credentials**, kan
+[formularpatchen](docs/automation-server-process-credentials.patch) tilføje
+vælgeren; backend understøtter allerede `credentials_id`. Patchen anvendes i
+Automation Server-kildekoden, hvorefter frontend genbygges. Den er ikke en del
+af processens kørselskode og er ikke automatisk installeret på din server.
+Se [Odenses procesformular](https://github.com/odense-rpa/automation-server/blob/main/frontend/src/components/ProcessForm.vue)
+og [API-schema](https://github.com/odense-rpa/automation-server/blob/main/backend/app/api/v1/schemas.py).
+
+Hvis en proces mangler credentialen, stopper automatiseringen med en forklaring.
+Der er ingen automatisk søgning efter et credential-navn eller brug af Git-login.
+
+Tilknyt også en workqueue til processen. Planlæg først processen med `--queue` for
 at finde kvalificerede sager og oprette work items. Kør derefter processen uden
 argumenter for at behandle køen. Hvert work item bliver automatisk markeret
 som completed eller failed af Automation Server.
@@ -61,8 +79,7 @@ dokumenterne gemmes ikke på disk.
 Ved købehandling genhentes posten via
 `GetIncidentInfringActByIdAsync?incidentId=<sags-id>&id=<post-id>`.
 Begge ID'er er påkrævet i klienten, og svarets ID'er kontrolleres.
-Der foretages aldrig direkte opslag med kun `incidentId`, da denne form
-gav HTTP 500 i testen mod InsuBiz. PDF-baserede køelementer gemmer i stedet
+PDF-baserede køelementer gemmer i stedet
 `source=pdf_report` og `report_document_id`. Ved købehandling genhentes
 dokumentlisten og rapporten, sagstilknytningen bekræftes, og alle regler
 vurderes igen. En fjernet, erstattet eller flertydig rapport forhindrer
@@ -124,3 +141,22 @@ skema ikke findes i brugerfladen.
 ```sh
 uv run --with pytest python -m pytest
 ```
+
+Ved lokal kørsel kopieres `.env.example` til `.env`, og `ATS_URL`, eventuelt
+`ATS_TOKEN`, `ATS_PROCESS` og `ATS_WORKQUEUE_OVERRIDE` sættes. `ATS_PROCESS`
+peger på en proces med den tilknyttede credential. På Automation Server findes
+processen automatisk fra den aktuelle session.
+
+## Kodestruktur
+
+- `main.py`: opstart, parametre og valg af køopbygning, behandling eller diagnose.
+- `configuration.py`: proces-credential og validering af credential-data.
+- `workflow.py`: køopbygning, sagslogs og behandling af køelementer.
+- `insubiz.py`: API-klient og de tre forretningsregler.
+- `report_pdf.py`: aflæsning af vedhæftede krænkelsesrapporter.
+- `diagnostics.py`: undersøgelse af udvalgte sager uden ændringer.
+
+Opdelingen følger [Odenses proces-template](https://github.com/odense-rpa/process-template/blob/main/main.py)
+med `AutomationServer.from_environment()`, proces-workqueue og særskilt
+køopbygning og købehandling. Køelementer bevares ved gentagen køopbygning;
+aktive referencer bruges til at undgå dubletter.

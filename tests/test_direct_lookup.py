@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock, call
 import pytest
 
 from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility
-from main import populate_queue, process_workqueue
+from workflow import populate_queue, process_workqueue
 
 
 def case(status=0):

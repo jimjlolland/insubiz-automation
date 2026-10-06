@@ -10,7 +10,7 @@ import pytest
 
 from diagnostics import diagnose_incidents
 from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility
-from main import populate_queue, process_workqueue
+from workflow import populate_queue, process_workqueue
 from report_pdf import PdfReportError, parse_pdf_report, read_incident_pdf_report
 
 
