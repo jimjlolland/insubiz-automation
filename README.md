@@ -156,14 +156,21 @@ processen automatisk fra den aktuelle session.
 
 ## Kodestruktur
 
-- `main.py`: opstart, parametre og valg af køopbygning, behandling eller diagnose.
+- `main.py`: opstart, parametre, `populate_queue`, `process_workqueue` og
+  behandling af køelementer med `for item in workqueue` og `with item`.
 - `configuration.py`: proces-credential og validering af credential-data.
-- `workflow.py`: køopbygning, sagslogs og behandling af køelementer.
+- `workflow.py`: udvælgelse af sager, sagslogs og genkontrol af én sag.
 - `insubiz.py`: API-klient og de tre forretningsregler.
 - `report_pdf.py`: aflæsning af vedhæftede krænkelsesrapporter.
 - `diagnostics.py`: undersøgelse af udvalgte sager uden ændringer.
 
-Opdelingen følger [Odenses proces-template](https://github.com/odense-rpa/process-template/blob/main/main.py)
-med `AutomationServer.from_environment()`, proces-workqueue og særskilt
-køopbygning og købehandling. Køelementer bevares ved gentagen køopbygning;
-aktive referencer bruges til at undgå dubletter.
+`main.py` følger [Odenses proces-template](https://github.com/odense-rpa/process-template/blob/main/main.py)
+med to asynkrone køfunktioner, `AutomationServer.from_environment()`,
+proces-workqueue og en `--queue`-gren, der afslutter før købehandling.
+`WorkItemError` markeres med `item.fail`, mens øvrige fejl håndteres af
+køelementets kontekst og logges, så næste element kan behandles.
+
+InsuBiz-udgaven har desuden valideret proceskonfiguration og `--diagnose`.
+Den bevarer eksisterende køelementer ved gentagen køopbygning i stedet for
+templatens `clear_workqueue(WorkItemStatus.NEW)`; aktive referencer bruges
+til at undgå dubletter.

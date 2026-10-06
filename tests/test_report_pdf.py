@@ -10,7 +10,7 @@ import pytest
 
 from diagnostics import diagnose_incidents
 from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility
-from workflow import populate_queue, process_workqueue
+from main import populate_queue, process_workqueue
 from report_pdf import PdfReportError, parse_pdf_report, read_incident_pdf_report
 
 
@@ -93,6 +93,9 @@ class PdfWorkItem:
 
     def __exit__(self, *args):
         return False
+
+    def fail(self, message):
+        self.message = message
 
 
 @pytest.mark.parametrize("scale,offset", [(1, 0), (.85, 15), (1.2, 20)])

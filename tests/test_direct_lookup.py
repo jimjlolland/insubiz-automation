@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock, call
 import pytest
 
 from insubiz import InsuBizClient, InsuBizError, evaluate_eligibility
-from workflow import populate_queue, process_workqueue
+from main import populate_queue, process_workqueue
 
 
 def case(status=0):
@@ -210,6 +210,9 @@ class WorkItem:
 
     def __exit__(self, *args):
         return False
+
+    def fail(self, message):
+        self.message = message
 
 
 @pytest.mark.parametrize("status", [1, 2, 3, None])

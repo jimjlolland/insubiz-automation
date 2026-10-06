@@ -1,7 +1,8 @@
 import unittest
 
 from configuration import parse_status_ids
-from workflow import format_case_context, populate_queue
+from main import populate_queue
+from workflow import format_case_context
 
 
 class FakeClient:

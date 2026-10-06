@@ -1,11 +1,14 @@
+import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+from automation_server_client import WorkItem, WorkItemError
 
 from insubiz import InsuBizError
-from main import main
+from main import main, process_workqueue
 
 
 @pytest.mark.parametrize("arguments,mode", [([], "process"), (["--queue"], "queue"),
@@ -55,3 +58,28 @@ def test_server_initialization_failure_is_reported_without_http_error_body(monke
     assert main(["--queue"]) == 1
     assert "opslag i Automation Server fejlede" in caplog.text
     assert "HEMMELIG" not in caplog.text
+
+
+@pytest.mark.parametrize("error", [WorkItemError("Manuel vurdering"), RuntimeError("API-fejl")])
+def test_failed_item_is_marked_once_and_next_item_completes(error, monkeypatch):
+    timestamp = datetime.now(timezone.utc)
+    items = [WorkItem(id=item_id, data={"incident_id": item_id}, locked=True,
+                      status="in progress", message="", workqueue_id=1,
+                      created_at=timestamp, updated_at=timestamp) for item_id in (12, 13)]
+    client = SimpleNamespace(authenticate=AsyncMock())
+    process_item = AsyncMock(side_effect=[error, True])
+    monkeypatch.setattr("main.process_incident_item", process_item)
+    monkeypatch.setattr("automation_server_client._models.ats_logging_handler", Mock())
+    update = Mock(return_value=httpx.Response(
+        200, request=httpx.Request("PUT", "https://automation.test/api/workitems/12/status"),
+    ))
+    monkeypatch.setattr("automation_server_client._models.httpx.put", update)
+
+    assert asyncio.run(process_workqueue(items, client, 3, True)) == 1
+
+    client.authenticate.assert_awaited_once_with()
+    assert process_item.await_count == 2
+    assert items[0].status == "failed"
+    assert items[0].message == str(error)
+    assert items[1].status == "completed"
+    assert [call.kwargs["json"]["status"] for call in update.call_args_list] == ["failed", "completed"]

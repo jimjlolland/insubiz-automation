@@ -1,4 +1,4 @@
-"""Queue population and processing for InsuBiz Automatisering 2."""
+"""InsuBiz case selection and processing helpers for the main workflow."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ async def load_new_infringing_acts(client: InsuBizClient) -> dict[int, dict[int,
         page_no += 1
 
 
-async def populate_queue(
+async def queue_eligible_incidents(
     workqueue: Workqueue,
     client: InsuBizClient,
     closed_status_id: int,
@@ -234,80 +234,52 @@ async def populate_queue(
     return queued_count
 
 
-async def process_workqueue(
-    workqueue: Workqueue,
+async def process_incident_item(
+    data: dict,
     client: InsuBizClient,
     closed_status_id: int,
     dry_run: bool,
-) -> int:
-    """Recheck and process each queued case in an Automation Server work-item context."""
+) -> bool:
+    """Recheck one queued case; return whether it qualifies for closing."""
     logger = logging.getLogger(__name__)
-    logger.info("Logger ind i InsuBiz for at behandle køen")
-    await client.authenticate()
-    logger.info("InsuBiz-login lykkedes")
-    processed_count = 0
-    for item in workqueue:
-        try:
-            with item:
-                incident_id = item.data.get("incident_id")
-                act_id = item.data.get("infringing_act_id")
-                source = item.data.get("source", "api")
-                document_id = item.data.get("report_document_id")
-                if (type(incident_id) is not int or incident_id <= 0
-                        or source not in {"api", "pdf_report"}
-                        or (source == "api" and (type(act_id) is not int or act_id <= 0))
-                        or (source == "pdf_report" and (type(document_id) is not int or document_id <= 0))):
-                    raise WorkItemError(
-                        "Work item mangler gyldigt sags-id eller kilde-id"
-                    )
-                incident = await client.get_incident(incident_id)
-                if (incident.get("status") or {}).get("id") == closed_status_id:
-                    logger.info(
-                        "Sag %s er allerede afsluttet (%s)",
-                        incident_id,
-                        format_case_context(incident),
-                    )
-                    continue
-                if (incident.get("status") or {}).get("id") != 0:
-                    logger.info("Sag %s springes over: status er ikke Ny (%s)",
-                                incident_id, format_case_context(incident))
-                    continue
-                if source == "pdf_report":
-                    result = await read_incident_pdf_report(client, incident, required_document_id=document_id)
-                    if result is None:
-                        raise WorkItemError(f"Sag {incident_id}: PDF-rapport kunne ikke hentes")
-                    report, _ = result
-                    act = report.as_infringing_act()
-                    logger.info("Sag %s: genaflæst PDF-rapport fra dokument %s", incident_id, document_id)
-                else:
-                    act = await client.get_infringing_act(incident_id, act_id)
-                if act is None:
-                    raise WorkItemError(f"Sag {incident_id}: krænkelsespost kunne ikke hentes")
-                decision = evaluate_eligibility(incident, act)
-                if not decision.eligible:
-                    logger.info(
-                        "Sag %s beholdes åben: %s (%s)",
-                        incident_id,
-                        decision.reason,
-                        format_case_context(incident, act),
-                    )
-                    continue
-                if dry_run:
-                    logger.info(
-                        "TØRKØRSEL: sag %s ville blive afsluttet: %s (%s)",
-                        incident_id,
-                        decision.reason,
-                        format_case_context(incident, act),
-                    )
-                else:
-                    await client.close_incident(incident_id, closed_status_id)
-                    logger.info(
-                        "Sag %s er afsluttet: %s (%s)",
-                        incident_id,
-                        decision.reason,
-                        format_case_context(incident, act),
-                    )
-                processed_count += 1
-        except Exception:
-            logger.exception("Work item %s fejlede", item.id)
-    return processed_count
+    incident_id = data.get("incident_id")
+    act_id = data.get("infringing_act_id")
+    source = data.get("source", "api")
+    document_id = data.get("report_document_id")
+    if (type(incident_id) is not int or incident_id <= 0
+            or source not in {"api", "pdf_report"}
+            or (source == "api" and (type(act_id) is not int or act_id <= 0))
+            or (source == "pdf_report" and (type(document_id) is not int or document_id <= 0))):
+        raise WorkItemError("Work item mangler gyldigt sags-id eller kilde-id")
+    incident = await client.get_incident(incident_id)
+    if (incident.get("status") or {}).get("id") == closed_status_id:
+        logger.info("Sag %s er allerede afsluttet (%s)", incident_id, format_case_context(incident))
+        return False
+    if (incident.get("status") or {}).get("id") != 0:
+        logger.info("Sag %s springes over: status er ikke Ny (%s)",
+                    incident_id, format_case_context(incident))
+        return False
+    if source == "pdf_report":
+        result = await read_incident_pdf_report(client, incident, required_document_id=document_id)
+        if result is None:
+            raise WorkItemError(f"Sag {incident_id}: PDF-rapport kunne ikke hentes")
+        report, _ = result
+        act = report.as_infringing_act()
+        logger.info("Sag %s: genaflæst PDF-rapport fra dokument %s", incident_id, document_id)
+    else:
+        act = await client.get_infringing_act(incident_id, act_id)
+    if act is None:
+        raise WorkItemError(f"Sag {incident_id}: krænkelsespost kunne ikke hentes")
+    decision = evaluate_eligibility(incident, act)
+    if not decision.eligible:
+        logger.info("Sag %s beholdes åben: %s (%s)",
+                    incident_id, decision.reason, format_case_context(incident, act))
+        return False
+    if dry_run:
+        logger.info("TØRKØRSEL: sag %s ville blive afsluttet: %s (%s)",
+                    incident_id, decision.reason, format_case_context(incident, act))
+    else:
+        await client.close_incident(incident_id, closed_status_id)
+        logger.info("Sag %s er afsluttet: %s (%s)",
+                    incident_id, decision.reason, format_case_context(incident, act))
+    return True
