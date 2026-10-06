@@ -80,8 +80,8 @@ def test_two_processes_can_choose_different_credentials(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("credential_id", [None, 0, -1, True, "invalid"])
-def test_missing_process_credential_never_uses_git_or_legacy_name(credential_id, monkeypatch):
+@pytest.mark.parametrize("credential_id", [0, -1, True, "invalid"])
+def test_invalid_process_credential_never_uses_git_or_legacy_name(credential_id, monkeypatch):
     request = Mock()
     monkeypatch.setattr("configuration.httpx.get", request)
     monkeypatch.setattr("configuration.Credential.get_credential", Mock())
@@ -89,6 +89,52 @@ def test_missing_process_credential_never_uses_git_or_legacy_name(credential_id,
         configuration_from_process(server(credential_id))
     request.assert_not_called()
     Credential.get_credential.assert_not_called()
+
+
+def test_existing_form_selection_is_used_when_process_credential_is_unset(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    request = Mock(return_value=response(credential_payload()))
+    monkeypatch.setattr("configuration.httpx.get", request)
+    monkeypatch.setattr("configuration.Credential.get_credential", Mock())
+    result = configuration_from_process(server(None, 77))
+    assert result.dry_run is True
+    assert result.active_incident_status_ids == (0,)
+    assert request.call_args.args[0] == "https://automation.test/api/credentials/77"
+    assert "felt: target_credentials_id" in caplog.text
+    assert "HEMMELIG" not in caplog.text
+    Credential.get_credential.assert_not_called()
+
+
+def test_existing_forms_can_choose_different_credentials(monkeypatch):
+    request = Mock(side_effect=[response(credential_payload(77)), response(credential_payload(88))])
+    monkeypatch.setattr("configuration.httpx.get", request)
+    configuration_from_process(server(None, 77))
+    configuration_from_process(server(None, 88))
+    assert [call.args[0] for call in request.call_args_list] == [
+        "https://automation.test/api/credentials/77", "https://automation.test/api/credentials/88",
+    ]
+
+
+@pytest.mark.parametrize("credential_id", [None, 0, -1, True, "invalid"])
+def test_missing_or_invalid_existing_form_selection_fails_before_lookup(credential_id, monkeypatch):
+    request = Mock()
+    monkeypatch.setattr("configuration.httpx.get", request)
+    monkeypatch.setattr("configuration.Credential.get_credential", Mock())
+    with pytest.raises(InsuBizError):
+        configuration_from_process(server(None, credential_id))
+    request.assert_not_called()
+    Credential.get_credential.assert_not_called()
+
+
+@pytest.mark.parametrize("process_credential_id", [None, 77])
+def test_git_only_credential_is_rejected_without_trying_another_selection(process_credential_id, monkeypatch):
+    request = Mock(return_value=response(credential_payload(data={})))
+    monkeypatch.setattr("configuration.httpx.get", request)
+    with pytest.raises(InsuBizError, match="mangler gyldig InsuBiz-konfiguration.*base_url") as error:
+        configuration_from_process(server(process_credential_id, 77 if process_credential_id is None else 99))
+    assert "HEMMELIG" not in str(error.value)
+    assert request.call_count == 1
+    assert request.call_args.args[0].endswith("/credentials/77")
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 410, 500])

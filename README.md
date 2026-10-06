@@ -32,23 +32,30 @@ Indtast dette i credentialens **Data**-felt:
 }
 ```
 
-Tilknyt credentialen til processens **Process credentials** (`credentials_id`).
+Vælg InsuBiz-credentialen i processens credential-felt. I den eksisterende
+procesformular hedder feltet **Git credentials** (`target_credentials_id`).
+Automatiseringen bruger dette valg, når processen ikke har en separat
+**Process credentials** (`credentials_id`). Hvis begge felter er udfyldt,
+bruges altid **Process credentials** til InsuBiz.
+
 Automatiseringen henter den valgte credential via ID for den aktuelle proces;
 den bruger hverken et fast navn eller InsuBiz-miljøvariabler. Credentialen kan
-omdøbes, og forskellige processer kan vælge forskellige credentials.
+omdøbes, og forskellige processer kan vælge forskellige credentials. Den valgte
+credential skal indeholde InsuBiz API-nøglerne og Data-feltet ovenfor; en ren
+Git-credential kan ikke bruges til InsuBiz.
 
-**Git credentials** (`target_credentials_id`) bruges af Automation Server til
-at klone repositoryet. Odenses offentlige procesformular viser aktuelt kun
-dette felt. Hvis din version heller ikke har **Process credentials**, kan
-[formularpatchen](docs/automation-server-process-credentials.patch) tilføje
-vælgeren; backend understøtter allerede `credentials_id`. Patchen anvendes i
-Automation Server-kildekoden, hvorefter frontend genbygges. Den er ikke en del
-af processens kørselskode og er ikke automatisk installeret på din server.
+Automation Server bruger også **Git credentials** til at klone repositoryet.
+Hvis repositoryet kræver et separat Git-login, kan den valgfrie
+[formularpatch](docs/automation-server-process-credentials.patch) tilføje
+**Process credentials**; backend understøtter allerede `credentials_id`.
+Patchen anvendes i Automation Server-kildekoden, hvorefter frontend genbygges.
+Den er ikke nødvendig for at bruge det eksisterende credential-valg.
 Se [Odenses procesformular](https://github.com/odense-rpa/automation-server/blob/main/frontend/src/components/ProcessForm.vue)
 og [API-schema](https://github.com/odense-rpa/automation-server/blob/main/backend/app/api/v1/schemas.py).
 
-Hvis en proces mangler credentialen, stopper automatiseringen med en forklaring.
-Der er ingen automatisk søgning efter et credential-navn eller brug af Git-login.
+Hvis en proces mangler en credential, eller den valgte credential er ugyldig,
+stopper automatiseringen med en forklaring. Der er ingen automatisk søgning
+efter et credential-navn eller skift til en anden credential ved fejl.
 
 Tilknyt også en workqueue til processen. Planlæg først processen med `--queue` for
 at finde kvalificerede sager og oprette work items. Kør derefter processen uden

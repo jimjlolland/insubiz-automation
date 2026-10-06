@@ -84,19 +84,23 @@ def configuration_from_credential(credential: Credential) -> InsuBizConfiguratio
 
 
 def configuration_from_process(ats: AutomationServer) -> InsuBizConfiguration:
-    """Use credentials_id; target_credentials_id belongs to repository access."""
+    """Use the process credential, or the existing form's credential selection."""
     process = ats.process
     if process is None:
         if not AutomationServerConfig.process:
             raise InsuBizError("Kør via Automation Server eller angiv ATS_PROCESS ved lokal kørsel")
         process = Process.get_process(positive_id(AutomationServerConfig.process, "ATS_PROCESS"))
+    credential_field = "credentials_id"
     credential_id = process.credentials_id
     if credential_id is None:
+        credential_field = "target_credentials_id"
+        credential_id = process.target_credentials_id
+    if credential_id is None:
         raise InsuBizError(
-            "Processen mangler en InsuBiz-credential i credentials_id. "
-            "Git credentials bruges til repositoryet; tilknyt en separat proces-credential."
+            "Processen mangler en valgt credential. Vælg InsuBiz-credentialen "
+            "i procesformularens credential-felt."
         )
-    credential_id = positive_id(credential_id, "Processens credentials_id")
+    credential_id = positive_id(credential_id, f"Processens {credential_field}")
     # automation-server-client 0.3.0 exposes lookup by name only. The server
     # supports lookup by id, preserving the selection even after a rename.
     try:
@@ -118,6 +122,15 @@ def configuration_from_process(ats: AutomationServer) -> InsuBizConfiguration:
         raise InsuBizError("Automation Server returnerede en ugyldig credential") from None
     if credential.id != credential_id or credential.deleted:
         raise InsuBizError("Processens credential er slettet eller har et forkert ID")
-    configuration = configuration_from_credential(credential)
-    logger.info("Bruger credential-id %s fra proces-id %s", credential_id, process.id)
+    try:
+        configuration = configuration_from_credential(credential)
+    except InsuBizError as error:
+        raise InsuBizError(
+            f"Processens valgte credential {credential_id} i {credential_field} "
+            f"mangler gyldig InsuBiz-konfiguration: {error}"
+        ) from None
+    logger.info(
+        "Bruger credential-id %s fra proces-id %s (felt: %s)",
+        credential_id, process.id, credential_field,
+    )
     return configuration
