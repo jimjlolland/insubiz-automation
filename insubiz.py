@@ -45,7 +45,7 @@ def evaluate_eligibility(incident: dict[str, Any], infringing_act: dict[str, Any
     score = reaction_score(infringing_act)
     if score is None:
         return Eligibility(False, "reaktionsskalaen mangler eller har flere svar")
-    if score >= 7:
+    if score > 7:
         return Eligibility(False, f"reaktionsskalaen er {score}")
     return Eligibility(True, f"fravær under én dag, ingen krisehjælp, skala {score}")
 

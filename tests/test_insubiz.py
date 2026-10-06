@@ -23,8 +23,13 @@ class EligibilityTests(unittest.TestCase):
         self.assertFalse(decision.eligible)
         self.assertIn("krisehjælp", decision.reason)
 
-    def test_case_is_not_eligible_at_score_seven(self) -> None:
-        self.assertFalse(evaluate_eligibility(incident(1), act(score=7)).eligible)
+    def test_case_is_eligible_at_score_seven(self) -> None:
+        self.assertTrue(evaluate_eligibility(incident(1), act(score=7)).eligible)
+
+    def test_case_is_not_eligible_above_score_seven(self) -> None:
+        for score in (8, 9, 10):
+            with self.subTest(score=score):
+                self.assertFalse(evaluate_eligibility(incident(1), act(score=score)).eligible)
 
     def test_reaction_score_requires_exactly_one_selection(self) -> None:
         self.assertIsNone(reaction_score({"reactionQ1": True, "reactionQ2": True}))

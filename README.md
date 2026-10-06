@@ -8,7 +8,7 @@ alle tre regler fra procesbeskrivelsen er opfyldt:
 2. Psykologisk krisehjælp (`postActQ1`) er udtrykkeligt `false`.
    Manglende eller ugyldige værdier forhindrer afslutning.
 3. Den umiddelbare reaktion (`reactionQ1`–`reactionQ10`) har præcis ét svar
-   og scoren er under 7.
+   og scoren er 7 eller derunder.
 
 Den bruger InsuBiz API 1.3-endepunkterne `SignInAsync`,
 `FindIncidentsPagedAsync`, `GetIncidentInfringActsPagedAsync`,
